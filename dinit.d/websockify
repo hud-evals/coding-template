@@ -1,0 +1,4 @@
+type = process
+command = sudo -E -u ubuntu websockify --web /usr/share/novnc 6080 localhost:5900
+depends-on = x11vnc
+logfile = /var/log/dinit/websockify.log

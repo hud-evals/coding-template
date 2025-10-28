@@ -1,0 +1,73 @@
+# Git
+.git/
+.gitignore
+.gitmodules
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.coverage
+*.cover
+.hypothesis/
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Logs
+*.log
+logs/
+build.log
+backend.log
+
+# Test outputs
+qa_results/
+test_results/
+coverage/
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Node (if any)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Unnecessary directories for Docker
+mitsushiba/
+autogenerate/
+problem_templates/
+test/
+test_data/
+taiga-frontend-enhanced-main/
+outline-codegen/ideas/
+outline-codegen/output/
+
+# Temporary problem files
+codegen_problems_qa.json
+qa_summary.md
+test_codegen_simple.json
+final_*.json
+test_problems*.json
+debug_codegen.py
+
+# Keep the build lean
+*.md
+!README.md 
