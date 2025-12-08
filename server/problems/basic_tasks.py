@@ -1,7 +1,7 @@
 import logging
 
-from hud_controller.graders import AgentPatchGrader
-from hud_controller.spec import EnvironmentState, Grade, problem
+from environment.graders import AgentPatchGrader
+from server.spec import EnvironmentState, Grade, problem
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +119,7 @@ def example_easy_task(state: EnvironmentState) -> Grade:
 #
 # For tasks that benefit from hints, use the HintSpec class:
 #
-# from hud_controller.spec import HintSpec
+# from server.spec import HintSpec
 #
 # @problem(
 #     id="example_with_hints",

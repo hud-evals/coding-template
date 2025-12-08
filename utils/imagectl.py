@@ -11,7 +11,7 @@ Behavior:
   --build/-b: Build Docker images
   --push/-p: Push Docker images to registry
   --validate/-v: Validate images before pushing
-  --json/-j: Generate problems-metadata.json file
+  --json/-j: Generate local-hud.json file and remote-hud.json file
 - Flags can be combined (e.g., -bpvj)
 - If no action flags are given, nothing is performed
 - Parallelism: --jobs creates N threads for concurrent operations
@@ -34,15 +34,16 @@ from typing import Literal, get_args
 # Ensure MCP tools do not load during import
 os.environ["MCP_TESTING_MODE"] = "0"
 
-import hud_controller.extractors
-from hud_controller.spec import PROBLEM_REGISTRY, ReviewLevel
-from hud_controller.utils import import_submodules
+import server.problems
+from server.main import spec_to_statement
+from server.spec import PROBLEM_REGISTRY, ReviewLevel
+from server.utils import import_submodules
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-# Import all extractors so their @problem decorators register specs
-import_submodules(hud_controller.extractors)
+# Import all problems so their @problem decorators register specs
+import_submodules(server.problems)
 
 
 def repo_root() -> str:
@@ -109,6 +110,7 @@ def compute_selected_ids(args: argparse.Namespace) -> set[str]:
 @dataclass
 class ProcessedSpec:
     id: str
+    description: str
     image: str
     base: str
     test: str
@@ -140,6 +142,7 @@ def filter_specs(args: argparse.Namespace) -> list[ProcessedSpec]:
 
         processed = ProcessedSpec(
             id=spec.id,
+            description=spec.description,
             image=image_base + spec.id,
             base=spec.base,
             test=spec.test,
@@ -241,49 +244,61 @@ def push_image(image: str) -> bool:
     return True
 
 
-def generate_problems_json(specs: list[ProcessedSpec], output_file: str = "problems-metadata.json") -> None:
-    """
-    Generate problems-metadata.json file from filtered specs.
-    Based on utils/generate_problems_json.py
-    """
-    # [CUSTOMIZE] Update metadata for your project
-    out = {
-        "problem_set": {
-            "owner": "[YOUR_ORG]",
-            "name": "[PROBLEM_SET_NAME]",
-            "version": "1.0.0",
-            "created_at": "2025-04-10T00:00:00Z",
-            "description": "[PROBLEM_SET_DESCRIPTION]",
-            "metadata": {"category": "coding", "language": "[LANGUAGE]", "difficulty": "medium"},
-            "problems": [],
-        }
+def hud_dict(spec: ProcessedSpec, local: bool) -> dict:
+    result = {
+        "id": spec.id,
+        "prompt": spec_to_statement(spec),
+        "setup_tool": {
+            "name": "setup_problem",
+            "arguments": {"problem_id": spec.id},
+        },
+        "evaluate_tool": {
+            "name": "grade_problem",
+            "arguments": {"problem_id": spec.id, "transcript": "dummy transcript"},
+        },
+        "agent_config": {
+            "allowed_tools": ["bash", "str_replace_editor", "computer"],
+        },
     }
 
-    for spec in specs:
-        # Get the original spec from PROBLEM_REGISTRY to access all fields
-        original_spec = next((s for s in PROBLEM_REGISTRY if s.id == spec.id), None)
-        if original_spec:
-            out["problem_set"]["problems"].append(
-                {
-                    "id": spec.id,
-                    "image": spec.image,
-                    "startup_command": original_spec.startup_command,
-                    "required_tools": ["computer", "bash", "str_replace_editor"],
-                    "scratchpad": "allowed",
-                    "enabled_package_managers": [],
-                    "metadata": {
-                        "difficulty": original_spec.difficulty,
-                        "task_type": original_spec.task_type,
-                        "review_level": original_spec.review_level,
-                        "description": original_spec.description,
-                    },
-                }
-            )
+    if local:
+        result["mcp_config"] = {
+            "local": {
+                "command": "docker",
+                "args": [
+                    "run",
+                    "--rm",
+                    "-i",
+                    spec.image,
+                ],
+            }
+        }
+    else:
+        result["mcp_config"] = {
+            "hud": {
+                "url": "https://mcp.hud.so/v3/mcp",
+                "headers": {
+                    "Authorization": "Bearer ${HUD_API_KEY}",
+                    "Mcp-Image": spec.image,
+                },
+            }
+        }
 
+    return result
+
+def generate_local_hud_json(specs: list[ProcessedSpec], output_file: str = "local-hud.json") -> None:
+    results = [hud_dict(spec, local=True) for spec in specs]
     with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(out, f, indent=2)
+        json.dump(results, f, indent=2)
         f.write("\n")
-    logger.info(f"Generated {output_file} with {len(out['problem_set']['problems'])} problems")
+    logger.info(f"Generated {output_file} with {len(results)} problems")
+
+def generate_remote_hud_json(specs: list[ProcessedSpec], output_file: str = "remote-hud.json") -> None:
+    results = [hud_dict(spec, local=False) for spec in specs]
+    with open(output_file, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2)
+        f.write("\n")
+    logger.info(f"Generated {output_file} with {len(results)} problems")
 
 
 def run_pipeline(
@@ -560,7 +575,8 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     # Generate JSON if requested (runs first)
     if args.json:
-        generate_problems_json(specs)
+        generate_local_hud_json(specs, "local-hud.json")
+        generate_remote_hud_json(specs, "remote-hud.json")
 
     # Only run pipeline if build, push, or validate is requested
     if args.build or args.push or args.validate:

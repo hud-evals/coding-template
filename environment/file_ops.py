@@ -1,10 +1,9 @@
-from collections import defaultdict
-from pathlib import Path
-from typing import Literal, get_args
-from dataclasses import dataclass
-from collections import deque
 import shlex
 import subprocess
+from collections import defaultdict, deque
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal, get_args
 
 from .base import CLIResult, ToolError, ToolResult
 from .run import demote, maybe_truncate, run
@@ -43,7 +42,7 @@ class EditTool:
         self._file_history = defaultdict(list)
         self._run_command_preexec_fn = run_command_preexec_fn
 
-    async def __call__(
+    async def execute(
         self,
         *,
         command: Command,

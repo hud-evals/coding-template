@@ -120,6 +120,9 @@ RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | b
 # Examples: Python (pip/poetry), Java (Maven/Gradle), C++ (CMake), Rust (Cargo)
 # =================================================================
 
+ARG REPO_PATH=/home/ubuntu/[PROJECT_NAME]
+ENV REPO_PATH=$REPO_PATH
+
 # 0) Clone or copy your project repository
 # Replace with your repo URL and credentials if needed
 # ENV GITHUB_TOKEN_BASE64=[YOUR_GITHUB_TOKEN_BASE64]
@@ -127,11 +130,11 @@ RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | b
 # Example for private repo:
 # RUN cd /home/ubuntu && \
 #     GITHUB_TOKEN=$(echo "$GITHUB_TOKEN_BASE64" | base64 -d); \
-#     git clone https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com/your-org/your-repo /home/ubuntu/[PROJECT_NAME]
+#     git clone https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com/your-org/your-repo $REPO_PATH
 # Example for public repo:
-# RUN git clone https://github.com/your-org/your-repo /home/ubuntu/[PROJECT_NAME]
+# RUN git clone https://github.com/your-org/your-repo $REPO_PATH
 
-WORKDIR /home/ubuntu/[PROJECT_NAME]
+WORKDIR $REPO_PATH
 
 # Checkout branches for testing (baseline, test, golden)
 ARG TEST_BRANCH=[test_branch_name]
@@ -154,7 +157,7 @@ RUN rm -rf .git && git init && git add . && git commit -m "Initial commit"
 
 # 1) Install language runtime/compiler
 # === FOR NODE.JS/TYPESCRIPT (example) ===
-# RUN NODE_VERSION_SPEC=$(jq -r '.engines.node // ""' /home/ubuntu/[PROJECT_NAME]/package.json) && \
+# RUN NODE_VERSION_SPEC=$(jq -r '.engines.node // ""' $REPO_PATH/package.json) && \
 #     NODE_VERSION=$(printf "%s" "$NODE_VERSION_SPEC" | grep -oE '<= *[0-9]+' | tail -n1 | sed -E 's/^[^0-9]*//') && \
 #     if [ -z "$NODE_VERSION" ]; then NODE_VERSION=$(printf "%s" "$NODE_VERSION_SPEC" | grep -oE '[0-9]+' | tail -n1); fi && \
 #     bash -c "source ~/.nvm/nvm.sh --no-use && nvm install $NODE_VERSION && nvm use $NODE_VERSION && nvm alias default $NODE_VERSION" && \
@@ -193,7 +196,7 @@ RUN rm -rf .git && git init && git add . && git commit -m "Initial commit"
 # Already installed with rustup
 
 # 3) Install dependencies
-# RUN cd /home/ubuntu/[PROJECT_NAME] && [INSTALL_DEPENDENCIES_COMMAND]
+# RUN cd $REPO_PATH && [INSTALL_DEPENDENCIES_COMMAND]
 # Examples:
 #   Node.js: yarn install
 #   Python: pip install -r requirements.txt  or  poetry install
@@ -206,7 +209,7 @@ RUN rm -rf .git && git init && git add . && git commit -m "Initial commit"
 # Configure your test framework to output JUnit XML.
 #
 # === FOR JEST (Node.js) ===
-# RUN cd /home/ubuntu/[PROJECT_NAME] && \
+# RUN cd $REPO_PATH && \
 #     yarn add jest-junit && \
 #     jq '.reporters = ["default", ["jest-junit", {"outputDirectory": "./", "outputName": "jest_results.xml"}]]' .jestconfig.json > .jestconfig.tmp && \
 #     mv .jestconfig.tmp .jestconfig.json
@@ -229,7 +232,7 @@ RUN rm -rf .git && git init && git add . && git commit -m "Initial commit"
 # Use gtest_junit_output: --gtest_output=xml:test_results.xml
 
 # 5) Build the project
-# RUN cd /home/ubuntu/[PROJECT_NAME] && [BUILD_COMMAND]
+# RUN cd $REPO_PATH && [BUILD_COMMAND]
 # Examples:
 #   Node.js: yarn build  or  npm run build
 #   Python: (often no build step)  or  python setup.py build
@@ -283,7 +286,8 @@ FROM setup AS runtime
 RUN pip install uv --break-system-packages
 
 # copy python files
-COPY ./src /mcp_server/src
+COPY ./environment /mcp_server/environment
+COPY ./server /mcp_server/server
 COPY ./pyproject.toml /mcp_server/pyproject.toml
 COPY ./README.md /mcp_server/README.md
 
@@ -311,4 +315,6 @@ ENV HINTS=$HINTS
 ARG PROBLEM_ID
 ENV PROBLEM_ID=$PROBLEM_ID
 
-CMD ["tail", "-f", "/dev/null"]
+CMD uvicorn environment.server:app --host 0.0.0.0 --port 8000 2>&1 & \
+    sleep 2 && \
+    exec hud_eval

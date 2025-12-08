@@ -13,8 +13,7 @@ from anthropic.types.beta import BetaToolUnionParam
 from mcp import ErrorData, McpError
 from mcp.types import INTERNAL_ERROR, INVALID_PARAMS, ImageContent, TextContent
 
-from hud_controller.tools.base import CLIResult
-
+from .base import CLIResult
 from .run import run
 
 logger = logging.getLogger(__name__)

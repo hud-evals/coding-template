@@ -11,7 +11,7 @@ import os
 # Ensure MCP tools do not load during import
 os.environ["MCP_TESTING_MODE"] = "0"
 
-import hud_controller.app as app
+import server.main as main_module
 
 
 def main() -> int:
@@ -26,8 +26,8 @@ def main() -> int:
     else:
         os.environ["HINTS"] = "none"
 
-    spec = app._get_spec(args.problem_id)
-    prompt = app.spec_to_statement(spec)
+    spec = main_module._get_spec(args.problem_id)
+    prompt = main_module.spec_to_statement(spec)
     print(prompt)
     return 0
 

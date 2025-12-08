@@ -2,8 +2,8 @@ import glob
 import os
 from typing import Any, Dict, Literal, Tuple, Union
 
-from hud_controller.grading_runner import GradingRunner
-from hud_controller.spec import EnvironmentState, Grader
+from environment.grading import GradingRunner
+from server.spec import EnvironmentState, Grader
 
 
 class DefaultTestCasesPassingGrader(Grader):
@@ -43,6 +43,7 @@ class AgentPatchGrader(Grader):
         playwright_test_files: list[str] | None = None,
         mocha_test_files: list[str] | None = None,
         test_files: list[str] | None = None,
+        only_server: bool = False,
     ) -> tuple[float, dict]:
         """
         Compute a score based on whether the agent patch fixes the issue.
@@ -53,13 +54,12 @@ class AgentPatchGrader(Grader):
             test: The test branch/commit name
             golden: The golden branch/commit name
             test_files: List of test files to run
+            only_server: Whether to only start the server without full grading
 
         Returns:
             tuple: (score, metadata) where score is 1.0 if agent patch fixes the issue, 0.0 otherwise
         """
         # Create and run the grading runner
-        from .app import ONLY_SERVER
-
         runner = GradingRunner(
             base=base,
             test=test,
@@ -67,7 +67,7 @@ class AgentPatchGrader(Grader):
             playwright_test_files=playwright_test_files,
             mocha_test_files=mocha_test_files,
             test_files=test_files,
-            only_server=ONLY_SERVER,
+            only_server=only_server,
         )
 
         success, metadata = runner.run_grading()
