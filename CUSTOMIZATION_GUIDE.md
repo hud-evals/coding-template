@@ -1,494 +1,406 @@
-# Customization Guide: Removing Copyrighted Content
+# Customization Guide
 
-This guide explains how to customize this template for your specific project and remove any references to copyrighted materials.
+This guide explains how to customize this template for your specific project.
 
 ## Overview
 
-This template was created from an evaluation framework originally designed for a specific open-source project. This guide helps you:
+This framework template can be adapted for any programming language and tech stack. All customization points are marked with `[PLACEHOLDERS]` and extensive comments explaining how to adapt them.
 
-1. Remove all project-specific references
-2. Adapt the structure for your codebase
-3. Maintain clean, reusable evaluation infrastructure
-4. Avoid copyright issues when sharing with clients
+## Quick Start Customization
 
-## Step-by-Step Customization
+Follow these steps to adapt the template for your project:
 
-### 1. Project Naming and Branding
+1. **Set Project Name**: Replace `[PROJECT_NAME]` throughout files
+2. **Configure Build**: Set build commands in Dockerfile and `environment/grading.py`
+3. **Configure Tests**: Set test framework and test commands
+4. **Set Database**: Update database names in SQL and env files (or remove if not needed)
+5. **Adjust Paths**: Update `/home/ubuntu/[PROJECT_NAME]` paths
 
-#### Update Package Name
+## Files to Customize
 
-Edit `pyproject.toml`:
+### 1. Dockerfile
 
-```toml
-[project]
-name = "your-company-evaluation-framework"  # Change from generic name
-version = "0.1.0"
-description = "AI Agent Evaluation Framework for [Your Project]"
+The Dockerfile contains the main project setup section. You need to uncomment and customize:
+
+**Required:**
+- Repository cloning (lines 126-135)
+- Branch checkout (lines 139-146)
+- Language runtime installation (lines 155-193)
+- Dependency installation (lines 195-202)
+- Test framework configuration (lines 204-229)
+- Project build (lines 231-238)
+
+**Examples by Tech Stack:**
+
+#### Node.js/TypeScript
+```dockerfile
+ARG REPO_PATH=/home/ubuntu/myproject
+ENV REPO_PATH=$REPO_PATH
+
+RUN git clone https://github.com/your-org/your-repo $REPO_PATH
+WORKDIR $REPO_PATH
+
+# Install Node.js
+RUN NODE_VERSION=20 && \
+    bash -c "source ~/.nvm/nvm.sh && nvm install $NODE_VERSION && nvm use $NODE_VERSION"
+SHELL ["/bin/bash", "--login", "-c"]
+
+# Install dependencies
+RUN yarn install
+
+# Configure Jest for JUnit XML output
+RUN yarn add jest-junit
+
+# Build
+RUN yarn build
 ```
 
-#### Update Repository References
+#### Python
+```dockerfile
+ARG REPO_PATH=/home/ubuntu/myproject
+ENV REPO_PATH=$REPO_PATH
 
-Search and replace project-specific paths throughout the codebase:
+RUN git clone https://github.com/your-org/your-repo $REPO_PATH
+WORKDIR $REPO_PATH
 
-```bash
-# Find all hardcoded references
-grep -r "outline" src/
-grep -r "ubuntu" src/
+# Python is already installed
+RUN python3 -m pip install --upgrade pip
 
-# Replace with your project specifics
-# Example: replace "outline" with your project name
-find src/ -type f -exec sed -i 's/outline/yourproject/g' {} +
+# Install dependencies
+RUN pip install -r requirements.txt
+
+# Configure pytest for JUnit XML output
+RUN pip install pytest-junit
 ```
 
-### 2. Environment Configuration
+#### Java
+```dockerfile
+ARG REPO_PATH=/home/ubuntu/myproject
+ENV REPO_PATH=$REPO_PATH
 
-#### Update Default Paths
+RUN git clone https://github.com/your-org/your-repo $REPO_PATH
+WORKDIR $REPO_PATH
 
-In `src/hud_controller/grading_runner.py`:
+# Maven is already installed
+RUN mvn dependency:resolve
 
+# Build (skip tests during build)
+RUN mvn package -DskipTests
+```
+
+### 2. environment/grading.py
+
+Multiple customization points for test execution and build process:
+
+**Test Command:**
 ```python
-# OLD (template):
-self.original_repo_path = os.environ.get("REPO_PATH", "/home/ubuntu/repo")
-
-# NEW (your project):
-self.original_repo_path = os.environ.get("REPO_PATH", "/path/to/your/project")
-```
-
-#### Update Database Names
-
-```python
-# OLD:
-db_name = os.environ.get("TEST_DB_NAME", "test_db")
-
-# NEW:
-db_name = os.environ.get("TEST_DB_NAME", "your_project_test")
-```
-
-#### Update User Context
-
-If your project doesn't run as a specific user:
-
-```python
-# OLD:
-subprocess.run(["sudo", "-u", "ubuntu", "bash", "-lc", command], ...)
-
-# NEW (no sudo):
-subprocess.run(["bash", "-lc", command], ...)
-
-# OR (different user):
-subprocess.run(["sudo", "-u", "youruser", "bash", "-lc", command], ...)
-```
-
-### 3. Remove Example Tasks
-
-The template includes example tasks in `src/hud_controller/extractors/`. You have two options:
-
-#### Option A: Keep as Templates (Recommended)
-
-Leave the example tasks as reference templates. They show the structure clearly and don't execute unless explicitly called.
-
-#### Option B: Remove Completely
-
-If you want a completely clean slate:
-
-```python
-# In basic_tasks.py, medium_tasks.py, hard_tasks.py
-# Delete all @problem definitions except the template comments
-
-# Keep only:
-import logging
-
-from hud_controller.graders import AgentPatchGrader
-from hud_controller.spec import EnvironmentState, Grade, problem
-
-logger = logging.getLogger(__name__)
-
-# Add your tasks here following the template structure in comments
-```
-
-### 4. Customize Build Process
-
-#### Update Build Commands
-
-In `grading_runner.py`, update the build command for your project:
-
-```python
-# OLD (Node.js/Yarn):
-build_process = subprocess.Popen(
-    ["sudo", "-u", "ubuntu", "bash", "-lc", 
-     "NODE_OPTIONS=\"--max-old-space-size=4096\" yarn build"],
-    ...
-)
-
-# NEW (Python/pip):
-build_process = subprocess.Popen(
-    ["python", "-m", "pip", "install", "-e", "."],
-    ...
-)
-
-# NEW (Maven):
-build_process = subprocess.Popen(
-    ["mvn", "clean", "package", "-DskipTests"],
-    ...
-)
-
-# NEW (Go):
-build_process = subprocess.Popen(
-    ["go", "build", "./..."],
-    ...
-)
-```
-
-#### Remove Cleanup Steps
-
-If you don't need JavaScript cleanup:
-
-```python
-# In run_grading method, remove or comment out:
-# self._cleanup_generated_js_files()
-
-# Or adapt for your needs:
-def _cleanup_generated_files(self):
-    """Remove generated files that interfere with build"""
-    # Your custom cleanup logic
-    pass
-```
-
-### 5. Adapt Test Framework
-
-#### Configure for Your Test Framework
-
-Update `run_grading()` to use your test runner:
-
-```python
-# For Jest (already configured):
-junit_xmls = [self.run_jest_tests()]
+# For Jest:
+test_command = f"yarn test -- --runInBand --verbose {' '.join(self.test_files)}"
 
 # For pytest:
-def run_pytest_tests(self) -> str:
-    logger.info(f"Running pytest in {self.grade_working_dir}")
-    result = subprocess.run(
-        ["pytest", "--junit-xml=pytest_results.xml"] + self.test_files,
-        cwd=self.grade_working_dir,
-        capture_output=True,
-        text=True,
+test_command = f"pytest --junit-xml=pytest_results.xml {' '.join(self.test_files)}"
+
+# For JUnit (Maven):
+test_command = f"mvn test -Dtest={','.join(self.test_files)}"
+
+# For GTest:
+test_command = f"./test_runner --gtest_output=xml:gtest_results.xml"
+```
+
+**Test Results XML File:**
+```python
+# For Jest:
+xml_file = "jest_results.xml"
+
+# For pytest:
+xml_file = "pytest_results.xml"
+
+# For JUnit:
+xml_file = "target/surefire-reports/TEST-*.xml"
+
+# For GTest:
+xml_file = "gtest_results.xml"
+```
+
+**Build Command:**
+```python
+# For Node.js:
+build_command = "NODE_OPTIONS=\"--max-old-space-size=4096\" yarn build"
+
+# For Python (often no build):
+build_command = "echo 'No build step required'"
+
+# For Java:
+build_command = "mvn package -DskipTests"
+
+# For C++:
+build_command = "cd build && cmake .. && make"
+
+# For Rust:
+build_command = "cargo build --release"
+```
+
+**Migration Command:**
+```python
+# For Node.js/Sequelize:
+migrate_cmd = "export NODE_ENV=test && yarn db:migrate"
+
+# For Django:
+migrate_cmd = "python manage.py migrate --noinput"
+
+# For Rails:
+migrate_cmd = "bundle exec rake db:migrate"
+
+# Set to None if no migrations:
+migrate_cmd = None
+```
+
+**Server Start Command:**
+```python
+# For Node.js:
+server_start_cmd = "yarn start"
+
+# For Django:
+server_start_cmd = "python manage.py runserver 3000"
+
+# For Flask:
+server_start_cmd = "flask run --port=3000"
+
+# For Spring Boot:
+server_start_cmd = "java -jar target/app.jar --server.port=3000"
+```
+
+### 3. server/problems/
+
+Update the task templates in `server/problems/`:
+
+**basic_tasks.py, medium_tasks.py, hard_tasks.py**
+
+Change `test_files` parameter to match your test file paths:
+
+```python
+from environment.graders import AgentPatchGrader
+from server.spec import EnvironmentState, Grade, problem
+
+@problem(
+    id="my_task",
+    description="Fix the bug...",
+    difficulty="easy",
+    base="my_task_baseline",
+    test="my_task_test",
+    golden="my_task_golden",
+)
+def my_task(state: EnvironmentState) -> Grade:
+    return Grade.from_subscores([
+        AgentPatchGrader.grade(
+            state=state,
+            weight=1.0,
+            base="my_task_baseline",
+            test="my_task_test",
+            golden="my_task_golden",
+            test_files=[
+                "tests/test_feature.py",  # For Python
+                # or
+                "src/test/MyTest.java",  # For Java
+                # or
+                "test/feature.test.ts",  # For TypeScript
+            ],
+        )
+    ])
+```
+
+### 4. server/main.py
+
+Customize the MCP server name and task template:
+
+```python
+mcp = FastMCP("your_project_evaluation", port=8039, log_level="DEBUG", debug=True)
+
+# Update the task template for your project:
+template = """
+You will be working on a task for [YOUR_PROJECT_NAME].
+The repository has already been cloned in the environment in /home/ubuntu/[PROJECT_NAME].
+
+[Add your project-specific instructions here]
+
+Use the tools provided to complete the following task:
+
+<STATEMENT>
+"""
+```
+
+### 5. utils/imagectl.py
+
+The `hud_dict` function generates task configs. Customize `allowed_tools` as needed:
+
+```python
+"agent_config": {
+    "allowed_tools": ["bash", "str_replace_editor", "computer"],
+}
+```
+
+### 6. build_scripts/alter_env_files.py
+
+Customize environment file setup:
+
+```python
+def main():
+    project_dir = os.environ.get("PROJECT_DIR", "/home/ubuntu/myproject")
+
+    upsert_env_variables(
+        f"{project_dir}/.env.test",
+        {
+            "DATABASE_URL": "postgresql://ubuntu:ubuntu@localhost:5432/myproject_test",
+            "NODE_ENV": "test",
+            "SECRET_KEY": "test-secret-key",
+        }
     )
-    with open(Path(self.grade_working_dir) / "pytest_results.xml") as f:
-        return f.read()
 
-# For JUnit/TestNG:
-def run_junit_tests(self) -> str:
-    logger.info(f"Running JUnit tests in {self.grade_working_dir}")
-    result = subprocess.run(
-        ["mvn", "test", "-Dtest=" + ",".join(self.test_files)],
-        cwd=self.grade_working_dir,
-        capture_output=True,
-        text=True,
-    )
-    with open(Path(self.grade_working_dir) / "target/surefire-reports/TEST-*.xml") as f:
-        return f.read()
-
-# For Go:
-def run_go_tests(self) -> str:
-    logger.info(f"Running Go tests in {self.grade_working_dir}")
-    result = subprocess.run(
-        ["go", "test", "-v", "./...", "-json"],
-        cwd=self.grade_working_dir,
-        capture_output=True,
-        text=True,
-    )
-    # Convert JSON to JUnit XML
-    return self._convert_go_json_to_junit(result.stdout)
+    shutil.copy(f"{project_dir}/.env.test", f"{project_dir}/.env")
 ```
 
-### 6. Database Configuration
+### 7. docker-entrypoint-initdb.d/01-init.sql
 
-#### Adapt or Remove Database Setup
+Replace placeholders with your database configuration:
 
-If your project doesn't use a database:
+```sql
+CREATE USER myuser WITH SUPERUSER PASSWORD 'mypassword';
+CREATE DATABASE myuser;
+GRANT ALL PRIVILEGES ON DATABASE myuser TO myuser;
 
-```python
-# In run_grading method, comment out or remove:
-# Step 5: Reset test database and run migrations
-# logger.info(...)
-# drop_cmd = ...
-# create_cmd = ...
-# migrate_cmd = ...
+CREATE DATABASE myproject_development;
+GRANT ALL PRIVILEGES ON DATABASE myproject_development TO myuser;
+
+CREATE DATABASE myproject_test;
+GRANT ALL PRIVILEGES ON DATABASE myproject_test TO myuser;
 ```
 
-If you use a different database:
-
-```python
-# For MongoDB:
-drop_cmd = f"mongo {db_name} --eval 'db.dropDatabase()'"
-create_cmd = f"mongo {db_name} --eval 'db.createCollection(\"init\")'"
-
-# For MySQL:
-drop_cmd = f"mysql -u root -p{password} -e 'DROP DATABASE IF EXISTS {db_name}'"
-create_cmd = f"mysql -u root -p{password} -e 'CREATE DATABASE {db_name}'"
-
-# For SQLite:
-import os
-db_path = f"/tmp/{db_name}.db"
-if os.path.exists(db_path):
-    os.remove(db_path)
-```
-
-### 7. Server Management
-
-#### Configure Server Starting
-
-Adapt `_needs_server_start()` for your project:
-
-```python
-def _needs_server_start(self) -> bool:
-    """Determine if server should start for tests"""
-    
-    # Option 1: Always start server
-    return True
-    
-    # Option 2: Never start server (tests don't need it)
-    return False
-    
-    # Option 3: Based on environment variable
-    return os.environ.get("START_SERVER_FOR_TESTS", "false").lower() == "true"
-    
-    # Option 4: Based on test types
-    # Start server only for integration tests
-    return any("integration" in test for test in self.test_files)
-```
-
-#### Update Server Start Command
-
-```python
-# OLD (Node.js):
-self.server_process = subprocess.Popen(
-    ["sudo", "-u", "ubuntu", "bash", "-lc", "yarn start"],
-    ...
-)
-
-# NEW (Django):
-self.server_process = subprocess.Popen(
-    ["python", "manage.py", "runserver", "3000"],
-    ...
-)
-
-# NEW (Flask):
-self.server_process = subprocess.Popen(
-    ["flask", "run", "--port=3000"],
-    env={**os.environ, "FLASK_APP": "app.py"},
-    ...
-)
-
-# NEW (Spring Boot):
-self.server_process = subprocess.Popen(
-    ["java", "-jar", "target/app.jar", "--server.port=3000"],
-    ...
-)
-```
-
-### 8. Docker Configuration
-
-#### Update Dockerfile
-
-Replace project-specific setup with your requirements:
-
-```dockerfile
-# Remove:
-# - Outline-specific packages
-# - Project-specific configurations
-# - Hardcoded paths
-
-# Add:
-# - Your project dependencies
-# - Your build tools
-# - Your database (if needed)
-
-# Example minimal Dockerfile:
-FROM ubuntu:22.04
-
-# Install Python and dependencies
-RUN apt-get update && apt-get install -y \
-    python3.11 \
-    python3-pip \
-    git \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy evaluation framework
-COPY . /evaluation
-WORKDIR /evaluation
-
-# Install framework
-RUN pip install -e .
-
-# Set environment variables
-ENV REPO_PATH=/workspace/repo
-ENV MCP_TESTING_MODE=1
-
-CMD ["hud_eval"]
-```
-
-### 9. Clean Up Unused Files
-
-#### Identify Project-Specific Files
-
-```bash
-# List files that might be project-specific
-find . -name "*outline*"
-find dinit.d/ -type f  # If you don't need dinit
-find docker-entrypoint-initdb.d/  # If you don't need this setup
-```
-
-#### Remove or Adapt
-
-- `dinit.d/` - Service initialization (remove if not needed)
-- `docker-entrypoint-initdb.d/` - Database init scripts (adapt or remove)
-- `build_scripts/` - Build customization (adapt for your project)
-- `.dockerignore` - Update for your project structure
-
-### 10. Documentation
-
-#### Update All Documentation
-
-1. **README.md** - Already updated with generic examples
-2. **SETUP_GUIDE.md** - Already generic
-3. **This file** - Keep as reference for clients
-4. **Add PROJECT_SPECIFIC.md** - Document your customizations
-
-Example PROJECT_SPECIFIC.md:
-
-```markdown
-# Project-Specific Configuration
-
-## Our Setup
-
-- **Language**: Python 3.11
-- **Test Framework**: pytest
-- **Database**: PostgreSQL 14
-- **Build Tool**: pip
+Or remove this file entirely if your project doesn't use PostgreSQL.
 
 ## Environment Variables
 
-- `REPO_PATH`: Path to our project repository
-- `TEST_DB_NAME`: Name of test database (default: our_project_test)
-
-## Task Creation
-
-Tasks are in `src/hud_controller/extractors/`:
-- `basic_tasks.py`: Simple bug fixes
-- `medium_tasks.py`: Feature additions
-- `hard_tasks.py`: Complex refactoring
-
-## Running Evaluations
+Set these environment variables when running the framework:
 
 ```bash
-# Setup
-source venv/bin/activate
-export REPO_PATH=/path/to/project
+# Required
+export REPO_PATH="/path/to/your/repository"
 
-# Run single task
-grade_problem task_id
-
-# Run all tasks
-python -m hud_controller.app
-```
+# Optional
+export TEST_DB_NAME="myproject_test"
+export MCP_TESTING_MODE="1"
+export LOG_LEVEL="DEBUG"
 ```
 
-### 11. Copyright and Licensing
+## Technology-Specific Examples
 
-#### Add Your License
+### Complete Node.js/TypeScript Example
 
-Replace or add a LICENSE file:
+1. **Dockerfile**: Uncomment Node.js sections
+2. **environment/grading.py**:
+   - `test_command`: Use yarn/jest
+   - `xml_file = "jest_results.xml"`
+   - `build_command = "yarn build"`
+   - Configure migration and server start commands
 
-```
-MIT License
+3. **build_scripts/alter_env_files.py**: Configure `.env.test` with DATABASE_URL, NODE_ENV
+4. **docker-entrypoint-initdb.d/01-init.sql**: Set up project databases
 
-Copyright (c) 2025 Your Company
+### Complete Python Example
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software...
-```
+1. **Dockerfile**: Comment out Node.js, uncomment Python sections
+2. **environment/grading.py**:
+   - `test_command = f"pytest --junit-xml=pytest_results.xml {' '.join(self.test_files)}"`
+   - `xml_file = "pytest_results.xml"`
+   - `build_command = "echo 'No build required'"`
+   - Configure migration and server start commands
 
-#### Add Copyright Headers
+3. **build_scripts/alter_env_files.py**: Configure with DJANGO_SETTINGS_MODULE, DATABASE_URL
+4. **docker-entrypoint-initdb.d/01-init.sql**: Same database setup
 
-Add headers to your new files:
+### Complete Java Example
 
-```python
-# Copyright (c) 2025 Your Company
-# Licensed under the MIT License
+1. **Dockerfile**: Uncomment Java sections
+2. **environment/grading.py**:
+   - `test_command = f"mvn test -Dtest={','.join(self.test_files)}"`
+   - `xml_file = "target/surefire-reports/TEST-*.xml"`
+   - `build_command = "mvn package -DskipTests"`
+   - Configure server start command
 
-"""
-Your module description
-"""
-```
+3. **build_scripts/alter_env_files.py**: May not be needed; use application.properties instead
+4. **docker-entrypoint-initdb.d/01-init.sql**: Same database setup
 
 ## Verification Checklist
 
-After customization, verify:
+After customizing, verify:
 
-- [ ] No references to original project name
-- [ ] All paths updated for your environment
-- [ ] Build process works for your project
-- [ ] Test framework integration works
-- [ ] Database setup (if needed) works
-- [ ] Example tasks removed or clearly marked as templates
-- [ ] Documentation updated
-- [ ] Environment variables documented
-- [ ] Docker configuration works (if using Docker)
-- [ ] All hardcoded values replaced with configs
-- [ ] LICENSE file added/updated
-- [ ] README reflects your project
+- [ ] All `[PLACEHOLDERS]` replaced with actual values
+- [ ] Build command works in your repository
+- [ ] Test command produces JUnit XML output
+- [ ] Test XML file path is correct
+- [ ] Database setup matches your project (or removed if not needed)
+- [ ] Environment files configured correctly
+- [ ] Server start command works (if needed)
+- [ ] Cleanup logic appropriate for your project (or removed)
 
-## Search and Replace Checklist
+## Testing Your Configuration
 
-Use these commands to find remaining references:
-
+1. Build the Docker image:
 ```bash
-# Search for common project-specific terms
-grep -ri "outline" . --exclude-dir=venv --exclude-dir=.git
-grep -ri "ubuntu" . --exclude-dir=venv --exclude-dir=.git
-grep -ri "rocket.chat" . --exclude-dir=venv --exclude-dir=.git
-
-# Search for hardcoded paths
-grep -r "/home/ubuntu" . --exclude-dir=venv --exclude-dir=.git
-grep -r "/tmp" . --exclude-dir=venv --exclude-dir=.git
-
-# Search for specific port numbers (if you need different ones)
-grep -r "3000" . --exclude-dir=venv --exclude-dir=.git
-grep -r "8039" . --exclude-dir=venv --exclude-dir=.git
+hud build
 ```
 
-## Best Practices for Clients
+2. Run a test container:
+```bash
+docker run -it <your-image> bash
+```
 
-When delivering to clients:
+3. Manually test each step:
+```bash
+# Check project is cloned
+cd $REPO_PATH
+ls -la
 
-1. **Provide Both Versions**:
-   - Template version (this) - shows structure
-   - Configured version - ready to use
+# Check build works
+[YOUR_BUILD_COMMAND]
 
-2. **Clear Documentation**:
-   - Document all customizations made
-   - Explain why each change was necessary
-   - Provide examples of adding new tasks
+# Check tests run
+[YOUR_TEST_COMMAND]
 
-3. **Training/Handoff**:
-   - Walk through creating a task
-   - Demonstrate running evaluations
-   - Show how to debug issues
+# Check XML output exists
+ls -la [XML_FILE_PATH]
+```
 
-4. **Ongoing Support**:
-   - Document common issues
-   - Provide troubleshooting guide
-   - Include contact for questions
+## Common Issues
 
-## Conclusion
+### Build Fails
 
-This template is designed to be easily customizable while maintaining a clear structure. The key is to:
+- **Issue**: Build command not found
+- **Solution**: Check language runtime is installed correctly in Dockerfile
 
-1. Replace all project-specific references
-2. Adapt the workflow to your build/test process
-3. Keep the core evaluation logic intact
-4. Document your customizations
+### Tests Don't Run
 
-The framework provides flexibility while maintaining a proven structure for agent evaluation.
+- **Issue**: Test command fails
+- **Solution**: Verify test framework is installed and configured
 
+### XML File Not Found
+
+- **Issue**: Can't read test results
+- **Solution**: Check xml_file path matches where your test framework outputs results
+
+### Database Errors
+
+- **Issue**: Can't connect to database
+- **Solution**: Verify database setup in 01-init.sql and environment files match
+
+## Summary
+
+The key customization points are:
+
+1. **Dockerfile**: Project setup, dependencies, build
+2. **environment/grading.py**: Test execution, build, migrations, server
+3. **server/problems/**: Task definitions
+4. **server/main.py**: MCP server configuration
+5. **build_scripts/alter_env_files.py**: Environment configuration
+6. **docker-entrypoint-initdb.d/01-init.sql**: Database initialization
+
+Everything else (Python framework code, tools, utilities) should work as-is without modification.
