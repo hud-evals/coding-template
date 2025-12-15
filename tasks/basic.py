@@ -1,7 +1,6 @@
 import logging
 
-from hud_controller.graders import AgentPatchGrader
-from hud_controller.spec import EnvironmentState, Grade, problem
+from grading import AgentPatchGrader, EnvironmentState, Grade, problem
 
 logger = logging.getLogger(__name__)
 

@@ -1,33 +1,27 @@
 [project]
-name = "hud-controller"
+name = "coding-env"
 version = "0.1.0"
-description = "Add your description here"
+description = "Coding environment with bash, editor, and VNC tools for solving programming tasks"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "fastmcp>=0.3.0",
+    "hud-python",
+    "anthropic>=0.49.0",
+    "click>=8.0.0",
     "mcp[cli]>=1.10.1",
+    "numpy>=1.26.0",
+    "packaging>=21.0",
     "pillow",
     "pydantic>=2.11.4",
-    "numpy>=1.26.0",
-    "pyyaml>=6.0.2",
-    "pymongo",
-    "anthropic>=0.49.0",
-    "jsonschema>=4.21.0",
-    "fastapi>=0.110.0",
-    "uvicorn>=0.28.0",
-    "imageio>=2.31.0",
-    "pytest>=8.4.0",
-    "packaging>=21.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0.0", "ruff==0.11.2", "pre-commit>=3.5.0"]
+dev = ["pytest>=8.0.0", "ruff==0.11.2", "pre-commit>=3.5.0"]
 
 [project.scripts]
-hud_eval = "hud_controller.app:main"
-setup_problem = "hud_controller.app:setup_problem_script"
-grade_problem = "hud_controller.app:grade_problem_script"
+hud_eval = "cli:main"
+setup_problem = "cli:setup_problem_script"
+grade_problem = "cli:grade_problem_script"
 
 [build-system]
 requires = ["hatchling"]

@@ -2,8 +2,8 @@ import glob
 import os
 from typing import Any, Dict, Literal, Tuple, Union
 
-from hud_controller.grading_runner import GradingRunner
-from hud_controller.spec import EnvironmentState, Grader
+from .runner import GradingRunner
+from .spec import EnvironmentState, Grader
 
 
 class DefaultTestCasesPassingGrader(Grader):

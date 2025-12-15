@@ -1,0 +1,26 @@
+[
+  {
+    "env": {"name": "my-org/coding"},
+    "scenario": "solve-task",
+    "args": {
+      "problem_id": "template_basic_task",
+      "hints_enabled": false
+    }
+  },
+  {
+    "env": {"name": "my-org/coding"},
+    "scenario": "solve-task",
+    "args": {
+      "problem_id": "template_medium_task",
+      "hints_enabled": false
+    }
+  },
+  {
+    "env": {"name": "my-org/coding"},
+    "scenario": "solve-task",
+    "args": {
+      "problem_id": "template_hard_task",
+      "hints_enabled": true
+    }
+  }
+]

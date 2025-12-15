@@ -5,8 +5,6 @@ from typing import Annotated, Any, Dict, List, Literal, Tuple, Union
 
 import numpy as np
 
-from .setup import default_setup
-
 logger = logging.getLogger(__name__)
 
 

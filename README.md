@@ -1,298 +1,308 @@
-# Agent Evaluation Framework Template
+# Coding Environment Template
 
-## Overview
+A full coding environment for agent evaluations. Provides bash, file editing, and VNC desktop. Uses `dinit` for services (Postgres, Redis, VNC).
 
-This is a template framework for creating and evaluating AI agent tasks. It provides a structured approach to:
-- Define coding tasks with clear specifications
-- Grade agent solutions automatically using test-based validation
-- Manage multiple task difficulties (easy, medium, hard)
-- Run tasks in isolated environments with proper grading
+> **⚠️ This is a template.** Before building, customize `Dockerfile.hud` for your project.
 
-## Project Structure
+## Template Setup
 
-```
-.
-├── src/hud_controller/          # Main framework code
-│   ├── app.py                   # Main MCP server and entry points
-│   ├── spec.py                  # Core specifications (Problem, Grade, Grader)
-│   ├── graders.py               # Grading implementations
-│   ├── grading_runner.py        # Test execution and grading logic
-│   ├── utils.py                 # Utility functions
-│   ├── setup.py                 # Environment setup
-│   ├── extractors/              # Task definitions by difficulty
-│   │   ├── basic_tasks.py       # Easy difficulty tasks
-│   │   ├── medium_tasks.py      # Medium difficulty tasks
-│   │   └── hard_tasks.py        # Hard difficulty tasks
-│   └── tools/                   # MCP tools for testing
-│       ├── base.py              # Base tool definitions
-│       ├── bash.py              # Bash execution
-│       ├── computer.py          # Computer interaction
-│       ├── edit.py              # File editing
-│       └── run.py               # Command running
-├── pyproject.toml               # Python package configuration
-├── Dockerfile                   # Container setup
-└── README.md                    # This file
+Edit `Dockerfile.hud` to configure your project:
+
+```dockerfile
+# 1. Clone your project (uncomment and edit)
+RUN git clone https://github.com/your-org/your-repo /home/ubuntu/myproject
+
+# 2. Set working directory
+WORKDIR /home/ubuntu/myproject
+
+# 3. Configure branches for grading
+ARG TEST_BRANCH=test          # Agent works here
+ARG GOLDEN_BRANCH=solution    # Reference solution
+ARG BASELINE_BRANCH=main      # Starting state
 ```
 
-## Core Concepts
+The **3-branch pattern**:
+| Branch | Purpose |
+|--------|---------|
+| `baseline` | Starting state the agent sees |
+| `test` | Where agent makes changes |
+| `golden` | Correct solution (for grading) |
 
-### 1. Problem Definition
+If you're **not using git-based problems**, comment out the git section in the Dockerfile (lines ~128-154).
 
-Problems are defined using the `@problem` decorator with these key fields:
+## 1. Deploy to Platform
+
+If you haven't already, connect this repo to hud.ai:
+
+1. Push to GitHub
+2. Go to [hud.ai](https://hud.ai) → **New** → **Environment**
+3. Connect your GitHub repo
+4. Your environment builds automatically on each push
+
+Once deployed, your environment is accessible by its slug (e.g., `my-org/coding`).
+
+## 2. Define Tools and Scenarios
+
+Tools are functions agents can call. Scenarios define the evaluation lifecycle.
+
+### Tools (in `env.py`)
 
 ```python
-@problem(
-    id="unique_task_id",
-    description="Detailed task description",
-    hints=[],  # Optional hints for agents
-    difficulty="easy",  # or "medium", "hard"
-    task_type="coding",
-    review_level="no-review",  # or other review levels
-    base="baseline_branch",
-    test="test_branch", 
-    golden="golden_solution_branch",
-)
-def task_name(state: EnvironmentState) -> Grade:
-    """Task implementation"""
-    # Return grade based on test results
+@env.tool()
+async def bash(command: str) -> str:
+    """Run a bash command."""
+
+@env.tool()
+async def editor(command: str, path: str, ...) -> str:
+    """View, create, and edit files."""
+
+@env.tool()
+async def computer(action: str, ...) -> list[dict]:
+    """VNC desktop interaction (mouse, keyboard, screenshots)."""
 ```
 
-### 2. Grading System
-
-The framework uses a sophisticated grading system:
-
-- **Grader**: Base class for all graders
-- **SubGrade**: Individual grading component with score and weight
-- **Grade**: Final grade computed from multiple SubGrades
-- **AgentPatchGrader**: Tests agent solutions by applying patches and running tests
-
-### 3. Test-Based Validation
-
-Tasks are graded by:
-1. Copying the repository to a clean workspace
-2. Applying a test patch (adds failing tests)
-3. Applying the agent's solution patch
-4. Running specified test files
-5. Parsing JUnit XML results to determine pass/fail
-
-## Creating New Tasks
-
-### Step 1: Choose Difficulty Level
-
-Place your task in the appropriate file:
-- `extractors/basic_tasks.py` - Easy tasks
-- `extractors/medium_tasks.py` - Medium tasks  
-- `extractors/hard_tasks.py` - Hard tasks
-
-### Step 2: Define the Task
+### Scenarios (in `scenarios.py`)
 
 ```python
+@env.scenario("solve-task")
+async def solve_task(problem_id: str, hints_enabled: bool = False):
+    await env.call_tool("_start_services")                    # Setup
+    prompt = spec_to_statement(get_problem_spec(problem_id))
+    _ = yield prompt                                          # Prompt → agent runs
+    result = await env.call_tool("_grade_solution", {"problem_id": problem_id})
+    yield result["score"]                                     # Reward
+```
+
+### Tasks (in `tasks/*.py`)
+
+```python
+from grading import problem, Grade, EnvironmentState, AgentPatchGrader
+
 @problem(
-    id="my_task",
-    description="Clear description of what needs to be implemented",
-    hints=[
-        HintSpec(
-            hint_type="legit",  # or "leaky"
-            text="Helpful hint text",
-            why_legitmate="Explanation of why this hint is fair"
-        )
-    ],
+    id="fix-bug",
+    description="Fix the login bug in auth.py",
     difficulty="easy",
-    task_type="coding",
-    review_level="no-review",
-    base="my_task_baseline",
-    test="my_task_test",
-    golden="my_task_golden",
+    base="main", test="test-branch", golden="golden-branch",
 )
-def my_task(state: EnvironmentState) -> Grade:
-    """
-    Task: Description
-    
-    :param state: The current state of the environment after the agent has worked
-    
-    Returns:
-        Grade: Score (0.0 to 1.0) based on test results
-    
-    Grading:
-        - Full score (1.0): All tests pass
-        - Zero score (0.0): Tests fail
-    """
+def fix_bug(state: EnvironmentState) -> Grade:
     return Grade.from_subscores([
-        AgentPatchGrader.grade(
-            state=state,
-            weight=1.0,
-            base="my_task_baseline",
-            test="my_task_test",
-            golden="my_task_golden",
-            jest_test_files=[
-                "path/to/test/file.test.ts",
-            ],
-        )
+        AgentPatchGrader.grade(state, weight=1.0, ...)
     ])
 ```
 
-### Step 3: Prepare Git Branches
+## 3. Create Tasks from Scenarios
 
-You need three branches in your target repository:
+Tasks are scenario instances with specific arguments.
 
-1. **baseline** - Starting state with the bug/missing feature
-2. **test** - Adds failing tests that verify the fix
-3. **golden** - Contains the correct solution (for reference)
-
-### Step 4: Configure Test Files
-
-Specify which test files should run:
-- `jest_test_files` - For Jest/TypeScript tests
-- `playwright_test_files` - For Playwright e2e tests (if supported)
-- `mocha_test_files` - For Mocha tests (if supported)
-
-## Running Tasks
-
-### Setup Environment
-
-```bash
-# Install dependencies
-pip install -e .
-
-# Or with development dependencies
-pip install -e ".[dev]"
-```
-
-### Run Grading
-
-```bash
-# Run a specific problem
-setup_problem <problem_id>
-grade_problem <problem_id>
-
-# Or use the main entry point
-hud_eval
-```
-
-## Grading Runner Details
-
-The `GradingRunner` class handles the entire grading workflow:
-
-1. **Workspace Preparation**: Copies repository to isolated workspace
-2. **Patch Application**: Applies test patch, then agent solution
-3. **Build Process**: Compiles the project (with cleanup of generated files)
-4. **Database Setup**: Resets test database and runs migrations (if applicable)
-5. **Server Management**: Optionally starts server (version-dependent)
-6. **Test Execution**: Runs specified test files
-7. **Result Collection**: Parses JUnit XML results
-8. **Cleanup**: Stops servers and cleans up resources
-
-## Configuration
-
-### Environment Variables
-
-Key environment variables used by the grading system:
-
-- `MCP_TESTING_MODE` - Enable testing tools (default: "1")
-- `NODE_ENV` - Node environment (set to "test" for testing)
-- `WEBHOOK_FAILURE_TIME_WINDOW` - Example task-specific config
-- `WEBHOOK_FAILURE_RATE_THRESHOLD` - Example task-specific config
-
-### Docker Configuration
-
-The included `Dockerfile` sets up the complete environment:
-- Base system with required tools
-- Database (PostgreSQL)
-- Redis
-- Node.js/Yarn
-- VNC for GUI testing (if needed)
-
-## Testing Framework Integration
-
-The framework currently supports Jest tests with JUnit XML output:
-
-```javascript
-// jest.config.js should include:
-reporters: [
-  'default',
-  ['jest-junit', {
-    outputDirectory: '.',
-    outputName: 'jest_results.xml',
-  }]
-]
-```
-
-## Best Practices
-
-### Task Design
-
-1. **Clear Descriptions**: Provide detailed, unambiguous task descriptions
-2. **Focused Scope**: Each task should test one concept or skill
-3. **Realistic Scenarios**: Base tasks on real-world debugging/development scenarios
-4. **Fair Hints**: If providing hints, ensure they guide without giving away the solution
-
-### Test Design
-
-1. **Comprehensive Coverage**: Tests should fully validate the requirement
-2. **Clear Failures**: Test failures should clearly indicate what's wrong
-3. **Minimal Changes**: Test patches should only add tests, not modify existing code
-4. **Isolation**: Tests should not depend on external state
-
-### Branch Management
-
-1. **Clean Baseline**: Baseline should be stable and buildable
-2. **Minimal Test Patch**: Only add tests that verify the specific requirement
-3. **Correct Golden**: Golden solution should be minimal and idiomatic
-
-## Extending the Framework
-
-### Adding New Graders
-
-Create a new grader by extending the `Grader` base class:
+**In Code:**
 
 ```python
-class CustomGrader(Grader):
-    name = "CustomGrader"
-    
-    @classmethod
-    def compute_score(cls, state: EnvironmentState, **kwargs) -> float:
-        # Your grading logic here
-        return score  # 0.0 to 1.0
+task = env("solve-task", problem_id="fix-bug")
 ```
 
-### Adding New Test Frameworks
+**From JSON (`remote_tasks.json`):**
 
-Modify `GradingRunner` to support additional test frameworks:
+```json
+{
+  "env": {"name": "my-org/coding"},
+  "scenario": "solve-task",
+  "args": {"problem_id": "fix-bug", "hints_enabled": false}
+}
+```
 
-1. Add test file parameter to `__init__`
-2. Create test execution method (similar to `run_jest_tests`)
-3. Ensure JUnit XML output
-4. Update `run_grading` to call new test method
+**On Platform:**
 
-## Troubleshooting
+After deploying, create tasks from your scenarios on hud.ai. Access them by slug:
 
-### Build Failures
+```python
+from hud.datasets import load_tasks
+tasks = load_tasks("my-org/coding-tasks")
+```
 
-- Check that baseline branch compiles successfully
-- Verify no generated files interfere (runner cleans up `.js` files from `.ts` sources)
-- Review build logs in stderr output
+## 4. Run Evaluations
 
-### Test Failures
+Run tasks and see results on hud.ai. You have three options:
 
-- Verify test patch applies cleanly to baseline
-- Check that tests fail on baseline + test patch
-- Confirm tests pass on baseline + test + golden patches
-- Review JUnit XML output for specific failures
+**On Platform:**
 
-### Server Issues
+Run evaluations at scale directly on [hud.ai](https://hud.ai) with parallel execution and automatic tracing.
 
-- Check version detection logic if server won't start
-- Verify database migrations run successfully
-- Ensure server port (3000) is available
+**CLI:**
 
-## License
+```bash
+hud eval ./remote_tasks.json --model gpt-4o --remote  # https://hud.ai/models
+hud eval my-org/coding-tasks --model gpt-4o --remote --group 5
+```
 
-This framework template is provided for guidance purposes. Customize as needed for your specific evaluation requirements.
+**Python:**
 
-## Support
+```python
+import hud
+from hud.agents import OpenAIChatAgent  # See all models: https://hud.ai/models
 
-For questions or issues:
-1. Review the example tasks in `extractors/` directories
-2. Check the grading logic in `grading_runner.py`
-3. Examine the problem decorator in `spec.py`
+task = env("solve-task", problem_id="fix-bug")
 
+async with hud.eval(task) as ctx:
+    agent = OpenAIChatAgent.create(model="gpt-4o")  # Uses inference.hud.ai
+    await agent.run(ctx)
+
+# Results are automatically traced to hud.ai
+```
+
+**With Variants (A/B Testing):**
+
+```python
+tasks = [env("solve-task", problem_id="fix-bug"), env("solve-task", problem_id="add-feature")]
+variants = {"model": ["gpt-4o-mini", "gpt-4o"]}
+
+async with hud.eval(tasks, variants=variants, group=2) as ctx:
+    agent = OpenAIChatAgent.create(model=ctx.variants["model"])
+    await agent.run(ctx)
+```
+
+## Local Development
+
+This environment requires Docker (for VNC, Postgres, etc.). Use `hud dev` with hot-reload:
+
+```bash
+# 1. Build the Docker image (first time only)
+hud build
+
+# 2. Start with hot-reload on tasks/grading
+hud dev -w tasks -w grading --port 8765
+
+# 3. Test locally
+python local_test.py
+```
+
+### Hot-Reload
+
+When you save a watched file, the MCP server restarts with fresh imports:
+
+| Component | Reloaded? |
+|-----------|-----------|
+| `tasks/*.py` | ✅ Yes |
+| `grading/*.py` | ✅ Yes |
+| `tools/*.py` | ✅ Yes (if watched) |
+| dinit services (postgres, redis, vnc) | ❌ No (persist) |
+
+**When to rebuild:** Dockerfile changes, system packages, service configs.
+
+## Structure
+
+```
+coding-template/
+├── env.py              # Tools + scenario registration
+├── scenarios.py        # Shared helpers + scenarios
+├── tools/              # bash, editor, computer
+├── grading/            # @problem decorator, graders
+├── tasks/              # Problem definitions
+├── services/           # dinit service loader
+├── dinit.d/            # Service configs (postgres, redis, vnc)
+├── local_test.py       # Dev testing
+└── Dockerfile.hud      # Container config
+```
+
+## Customization Guide
+
+This template is designed to be adapted for different tech stacks. Here's how to customize it for your project.
+
+### 1. Update Package Name
+
+Edit `pyproject.toml`:
+
+```toml
+[project]
+name = "your-company-evaluation-framework"
+description = "AI Agent Evaluation Framework for [Your Project]"
+```
+
+### 2. Configure Your Tech Stack
+
+In `Dockerfile.hud`, uncomment and configure the section for your language:
+
+**Python:**
+```dockerfile
+RUN python3 -m pip install --upgrade pip
+RUN pip install poetry  # or: pipenv, pip-tools
+RUN cd /home/ubuntu/myproject && pip install -r requirements.txt
+```
+
+**Java/Maven:**
+```dockerfile
+RUN apt-get install -y openjdk-17-jdk maven
+RUN cd /home/ubuntu/myproject && mvn dependency:resolve
+```
+
+**Go:**
+```dockerfile
+RUN wget https://go.dev/dl/go1.21.0.linux-amd64.tar.gz && tar -C /usr/local -xzf go*.tar.gz
+RUN cd /home/ubuntu/myproject && go mod download
+```
+
+**Rust:**
+```dockerfile
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+RUN cd /home/ubuntu/myproject && cargo fetch
+```
+
+### 3. Configure Test Framework
+
+The grading system requires JUnit XML output. Configure your test framework:
+
+**pytest:**
+```python
+# In grading/runner.py
+def run_pytest_tests(self) -> str:
+    result = subprocess.run(
+        ["pytest", "--junit-xml=pytest_results.xml"] + self.test_files,
+        cwd=self.grade_working_dir, capture_output=True, text=True,
+    )
+    return Path(self.grade_working_dir, "pytest_results.xml").read_text()
+```
+
+**Go test:**
+```python
+def run_go_tests(self) -> str:
+    result = subprocess.run(
+        ["go", "test", "-v", "./...", "-json"],
+        cwd=self.grade_working_dir, capture_output=True, text=True,
+    )
+    return self._convert_go_json_to_junit(result.stdout)
+```
+
+### 4. Database Configuration
+
+Adapt or remove database setup in `grading/runner.py`:
+
+**No database:**
+```python
+# Comment out database reset steps in run_grading()
+```
+
+**MySQL:**
+```python
+drop_cmd = f"mysql -u root -p{password} -e 'DROP DATABASE IF EXISTS {db_name}'"
+create_cmd = f"mysql -u root -p{password} -e 'CREATE DATABASE {db_name}'"
+```
+
+**MongoDB:**
+```python
+drop_cmd = f"mongo {db_name} --eval 'db.dropDatabase()'"
+```
+
+### 5. User Context
+
+If your project doesn't run as `ubuntu`:
+
+```python
+# In tools/bash.py - remove sudo wrapper
+subprocess.run(["bash", "-lc", command], ...)
+
+# Or use a different user
+subprocess.run(["sudo", "-u", "youruser", "bash", "-lc", command], ...)
+```
+
+## Documentation
+
+Full documentation: [docs.hud.ai](https://docs.hud.ai)
