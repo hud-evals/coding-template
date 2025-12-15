@@ -175,6 +175,12 @@ hud dev -w tasks -w grading --port 8765
 python local_test.py
 ```
 
+> ⚠️ **Local runs one task at a time.** The local environment uses a single container, so tasks run sequentially. For parallel execution, push and run remotely:
+> ```bash
+> hud push
+> hud eval ./remote_tasks.json --model gpt-4o --remote --group 5
+> ```
+
 ### Hot-Reload
 
 When you save a watched file, the MCP server restarts with fresh imports:
