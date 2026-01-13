@@ -129,24 +129,33 @@ RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | b
 #     GITHUB_TOKEN=$(echo "$GITHUB_TOKEN_BASE64" | base64 -d); \
 #     git clone https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com/your-org/your-repo /home/ubuntu/[PROJECT_NAME]
 # Example for public repo:
-# RUN git clone https://github.com/your-org/your-repo /home/ubuntu/[PROJECT_NAME]
+# RUN git clone https://github.com/your-org/your-repo /home/ubuntu/outline
 
-WORKDIR /home/ubuntu/[PROJECT_NAME]
+WORKDIR /home/ubuntu/outline
 
-# Checkout branches for testing (baseline, test, golden)
-ARG TEST_BRANCH=[test_branch_name]
-ARG GOLDEN_BRANCH=[golden_branch_name]
-ARG BASELINE_BRANCH=[baseline_branch_name]
-RUN git checkout $BASELINE_BRANCH && \
-    git checkout $TEST_BRANCH && \
-    git checkout $GOLDEN_BRANCH && \
-    git checkout $BASELINE_BRANCH
+# ========================= PATCH GENERATION =========================
+# Generate patches for ALL registered problems at build time.
+# Patches are stored in /home/root/patches/{problem_id}/ and selected
+# at runtime based on the problem_id scenario argument.
+# ====================================================================
 
-# Generate patches for grading
+# Copy grading and tasks modules needed for PROBLEM_REGISTRY access
 USER root
-RUN mkdir -p /home/root && \
-    sudo -u ubuntu git diff $BASELINE_BRANCH $TEST_BRANCH > /home/root/test.patch && \
-    sudo -u ubuntu git diff $BASELINE_BRANCH $GOLDEN_BRANCH > /home/root/golden.patch
+COPY ./grading /tmp/patch_gen/grading
+COPY ./tasks /tmp/patch_gen/tasks
+COPY ./build_scripts/generate_all_patches.py /tmp/patch_gen/
+
+# Generate patches for all problems
+RUN mkdir -p /home/root/patches && \
+    cd /home/ubuntu/outline && \
+    PYTHONPATH=/tmp/patch_gen \
+    REPO_PATH=/home/ubuntu/outline \
+    PATCHES_DIR=/home/root/patches \
+    python3 /tmp/patch_gen/generate_all_patches.py
+
+# Clean up temporary patch generation files
+RUN rm -rf /tmp/patch_gen
+
 USER ubuntu
 
 # Overwrite git history to avoid leaking info
@@ -319,8 +328,9 @@ EXPOSE 6080 3000
 ARG HINTS="none"
 ENV HINTS=$HINTS
 
-ARG PROBLEM_ID
-ENV PROBLEM_ID=$PROBLEM_ID
+# PROBLEM_ID is set at runtime via scenario args, not at build time
+# It selects which patches to use from /home/root/patches/{problem_id}/
+ENV PROBLEM_ID=""
 
 # Run the HUD MCP server
 CMD ["hud", "dev", "env:env", "--stdio"]

@@ -35,34 +35,51 @@ class GradingRunner:
         test: str,
         golden: str,
         playwright_test_files: list[str] | None = None,
-        mocha_test_files: list[str] | None = None, # Warning: ignored for now
+        mocha_test_files: list[str] | None = None,  # Warning: ignored for now
         test_files: list[str] | None = None,
-        test_patch_path: str = "/home/root/test.patch",
-        golden_patch_path: str = "/home/root/golden.patch",
+        problem_id: str | None = None,
+        patches_base_dir: str = "/home/root/patches",
         only_server: bool = False,
     ):
         """
         Initialize the grading runner.
 
         Args:
-            base: The baseline branch name (preferred)
-            test: The test branch name (optional, for logging)
-            golden: The golden branch name (optional, for logging)
+            base: The baseline branch name (for logging/metadata)
+            test: The test branch name (for logging/metadata)
+            golden: The golden branch name (for logging/metadata)
             test_files: List of test files to run
-            test_patch_path: Path to the test patch file (default: /home/root/test.patch)
-            golden_patch_path: Path to the golden patch file (default: /home/root/golden.patch)
-            working_dir: Working directory for grading (default: /tmp/grading_workspace)
+            problem_id: Problem ID to select patches from patches_base_dir.
+                       If not provided, falls back to PROBLEM_ID env var.
+            patches_base_dir: Base directory containing problem patches
+                             (default: /home/root/patches)
+            only_server: Whether to only start the server without running tests
         """
         # Determine what to use - branches take precedence
         self.use_base = base
         self.use_test = test
         self.use_golden = golden
-        self.test_patch_path = test_patch_path
-        self.golden_patch_path = golden_patch_path
         self.test_files = test_files or []
         self.only_server = only_server
         self.grade_working_dir = "/tmp/grading_workspace_" + str(uuid.uuid4())
-        self.original_repo_path = os.environ.get("REPO_PATH", "/home/ubuntu/repo")
+        self.original_repo_path = os.environ.get("REPO_PATH", "/home/ubuntu/outline")
+
+        # Resolve problem_id from parameter or environment
+        self.problem_id = problem_id or os.environ.get("PROBLEM_ID")
+
+        if not self.problem_id:
+            raise ValueError(
+                "problem_id is required. Set PROBLEM_ID env var or pass problem_id parameter."
+            )
+
+        # Derive patch paths from problem_id
+        self.test_patch_path = os.path.join(
+            patches_base_dir, self.problem_id, "test.patch"
+        )
+        self.golden_patch_path = os.path.join(
+            patches_base_dir, self.problem_id, "golden.patch"
+        )
+        logger.info(f"Using patches for problem '{self.problem_id}' from {patches_base_dir}")
         
         # Store references to server process and threads for cleanup
         self.server_process = None

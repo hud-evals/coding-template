@@ -82,11 +82,15 @@ def register_scenarios(env) -> None:
             hints_enabled: Whether to include hints in the prompt
 
         This scenario:
-        1. Calls _start_services (starts postgres, redis, VNC, xfce4)
-        2. Calls _setup_codebase (prepares the project)
-        3. Yields prompt to agent
-        4. Calls _grade_solution after agent finishes
+        1. Sets PROBLEM_ID env var for patch selection
+        2. Calls _start_services (starts postgres, redis, VNC, xfce4)
+        3. Calls _setup_codebase (prepares the project)
+        4. Yields prompt to agent
+        5. Calls _grade_solution after agent finishes
         """
+        # Set PROBLEM_ID env var so grading runner can find the correct patches
+        os.environ["PROBLEM_ID"] = problem_id
+
         spec = get_problem_spec(problem_id)
         project_dir = get_project_dir()
 
