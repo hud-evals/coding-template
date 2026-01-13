@@ -276,22 +276,33 @@ ENV POSTGRES_USER=ubuntu
 ENV POSTGRES_PASSWORD=ubuntu
 ENV POSTGRES_DB=ubuntu
 
-# ================================ hud evals mcp server setup ================================================
+# ================================ HUD Environment Setup ================================================
 FROM setup AS runtime
 
-# prepare for the hud evals mcp server
+# Install uv for dependency management
 RUN pip install uv --break-system-packages
 
-# copy python files
-COPY ./src /mcp_server/src
+# Copy the environment structure
+# env.py: tools + scenario registration
+# scenarios.py: shared helpers + scenario definitions (use call_tool)
+# For dev iteration: hud dev -w tasks -w grading --port 8765
+COPY ./env.py /mcp_server/env.py
+COPY ./scenarios.py /mcp_server/scenarios.py
+COPY ./tools /mcp_server/tools
+COPY ./grading /mcp_server/grading
+COPY ./tasks /mcp_server/tasks
+COPY ./services /mcp_server/services
 COPY ./pyproject.toml /mcp_server/pyproject.toml
 COPY ./README.md /mcp_server/README.md
 
+WORKDIR /mcp_server
+
 ENV RUST_LOG=warn
-RUN cd /mcp_server && uv venv && . .venv/bin/activate && uv sync && uv pip install -e . 
-ENV PYTHONPATH=/mcp_server/.venv/lib/python3.10/site-packages
+RUN uv venv && . .venv/bin/activate && uv sync && uv pip install -e .
+ENV PYTHONPATH=/mcp_server/.venv/lib/python3.12/site-packages:/mcp_server
 ENV PATH=/mcp_server/.venv/bin:$PATH
 
+# VNC/Computer tool settings
 ENV WIDTH=1280
 ENV HEIGHT=800
 ENV DISPLAY_NUM=1
@@ -311,4 +322,5 @@ ENV HINTS=$HINTS
 ARG PROBLEM_ID
 ENV PROBLEM_ID=$PROBLEM_ID
 
-CMD ["tail", "-f", "/dev/null"]
+# Run the HUD MCP server
+CMD ["hud", "dev", "env:env", "--stdio"]

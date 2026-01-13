@@ -1,3 +1,4 @@
+"""Base classes for tool results and errors."""
 from dataclasses import dataclass, fields, replace
 
 
@@ -14,7 +15,9 @@ class ToolResult:
         return any(getattr(self, field.name) for field in fields(self))
 
     def __add__(self, other: "ToolResult"):
-        def combine_fields(field: str | None, other_field: str | None, concatenate: bool = True):
+        def combine_fields(
+            field: str | None, other_field: str | None, concatenate: bool = True
+        ):
             if field and other_field:
                 if concatenate:
                     return field + other_field
@@ -33,7 +36,6 @@ class ToolResult:
         return replace(self, **kwargs)
 
 
-# QUESTION(simon): What's our intent behind differentiating here?
 class CLIResult(ToolResult):
     """A ToolResult that can be rendered as a CLI output."""
 
