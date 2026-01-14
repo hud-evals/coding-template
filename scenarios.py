@@ -2,17 +2,13 @@
 
 This file contains:
 - Shared helper functions (used by scenarios and CLI)
-- Scenario definitions (use call_tool, work in both container and dev mode)
-
-Scenarios use env.call_tool() which routes to:
-- Local tool functions when running in the container
-- HTTP calls when connected to a dev server
+- Scenario definitions that directly call internal functions from env.py
 """
+
 import os
 
-from grading import PROBLEM_REGISTRY, ProblemSpec
 import tasks  # noqa: F401 - registers problems
-
+from grading import PROBLEM_REGISTRY, ProblemSpec
 
 # ============================================================================
 # Shared Helpers (used by scenarios and CLI)
@@ -67,11 +63,11 @@ def get_project_dir() -> str:
 
 def register_scenarios(env) -> None:
     """Register all scenarios on the environment.
-    
-    Scenarios use env.call_tool() which automatically routes to:
-    - Local tool functions (when running in container)
-    - Remote tools via HTTP (when connected to dev server)
+
+    Scenarios directly import and call internal functions from env.py.
     """
+    # Import internal functions from env.py
+    from env import grade_solution, setup_codebase, start_services
 
     @env.scenario("solve-task")
     async def solve_task(problem_id: str, hints_enabled: bool = False):
@@ -83,10 +79,10 @@ def register_scenarios(env) -> None:
 
         This scenario:
         1. Sets PROBLEM_ID env var for patch selection
-        2. Calls _start_services (starts postgres, redis, VNC, xfce4)
-        3. Calls _setup_codebase (prepares the project)
+        2. Starts dinit services
+        3. Sets up the codebase
         4. Yields prompt to agent
-        5. Calls _grade_solution after agent finishes
+        5. Grades solution after agent finishes
         """
         # Set PROBLEM_ID env var so grading runner can find the correct patches
         os.environ["PROBLEM_ID"] = problem_id
@@ -94,14 +90,14 @@ def register_scenarios(env) -> None:
         spec = get_problem_spec(problem_id)
         project_dir = get_project_dir()
 
-        # Setup phase: call internal tools
-        await env.call_tool("_start_services")
-        await env.call_tool("_setup_codebase", {"project_dir": project_dir})
+        # Setup phase: call internal functions
+        await start_services()
+        await setup_codebase(project_dir)
 
         # Yield prompt to agent
         prompt = spec_to_statement(spec, hints_enabled)
         _ = yield prompt
 
         # Evaluate: call grading
-        result = await env.call_tool("_grade_solution", {"problem_id": problem_id})
+        result = await grade_solution(problem_id)
         yield result["score"]

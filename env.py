@@ -8,6 +8,7 @@ This environment provides tools for:
 Tools prefixed with _ are internal (hidden from agent, used by scenarios).
 Scenarios are defined in scenarios.py and registered at the bottom of this file.
 """
+
 import asyncio
 import logging
 import os
@@ -16,7 +17,7 @@ from typing import Any
 
 from hud import Environment
 
-from grading import EnvironmentState, PROBLEM_REGISTRY, ProblemSpec
+from grading import EnvironmentState
 from scenarios import get_problem_spec, register_scenarios
 from services import ServiceLoader, SimpleDinit
 from tools import BashTool, ComputerTool, EditTool, ToolError
@@ -73,7 +74,7 @@ async def shutdown() -> None:
 async def bash(
     command: str | None = None,
     restart: bool = False,
-) -> str:
+):
     """Run a bash command in the sandboxed shell.
 
     Args:
@@ -88,9 +89,11 @@ async def bash(
 
     try:
         result = await _bash_tool(command=command, restart=restart)
+        # Combine stdout and stderr - stderr may contain warnings, not just errors
+        output = result.output or ""
         if result.error:
-            return f"Error: {result.error}"
-        return result.output or result.system or ""
+            output = f"{output}\n{result.error}".strip() if output else result.error
+        return output or result.system or ""
     except ToolError as e:
         return f"Error: {e.message}"
 
@@ -189,11 +192,13 @@ async def computer(
             if hasattr(block, "text"):
                 output.append({"type": "text", "text": block.text})
             elif hasattr(block, "data"):
-                output.append({
-                    "type": "image",
-                    "data": block.data,
-                    "mimeType": getattr(block, "mimeType", "image/png"),
-                })
+                output.append(
+                    {
+                        "type": "image",
+                        "data": block.data,
+                        "mimeType": getattr(block, "mimeType", "image/png"),
+                    }
+                )
         return output
 
     except Exception as e:
@@ -201,51 +206,47 @@ async def computer(
 
 
 # ============================================================================
-# Internal Tools (hidden from agent, used by scenarios via call_tool)
+# Internal Functions (called directly by scenarios, not exposed as tools)
 # ============================================================================
 
 
-@env.tool()
-async def _start_services() -> str:
+async def start_services() -> str:
     """Start all dinit services (postgres, redis, VNC, xfce4).
 
-    This is an internal tool called by scenarios before agent interaction.
+    This is an internal function called by scenarios before agent interaction.
     """
     logger.info("Starting dinit services")
     loader = ServiceLoader(Path("/etc/dinit.d"))
     services = loader.load_all()
     engine = SimpleDinit(services)
     engine.start("boot")
-    
+
     # Wait for XFCE to fully start
     test_mode = os.environ.get("MCP_TESTING_MODE", "1") in ["1", "true"]
     delay = 5 if test_mode else 30
     logger.info("Waiting %d seconds for XFCE...", delay)
     await asyncio.sleep(delay)
-    
+
     return "Services started successfully"
 
 
-@env.tool()
-async def _setup_codebase(project_dir: str) -> str:
+async def setup_codebase(project_dir: str) -> str:
     """Set up the codebase for a coding task.
 
     Args:
         project_dir: Path to the project directory
 
-    This is an internal tool called by scenarios to prepare the environment.
+    This is an internal function called by scenarios to prepare the environment.
     """
     os.chdir(project_dir)
-    
+
     # [OPTIONAL] Remove problematic lines from Makefile
     makefile_path = Path(project_dir) / "Makefile"
     if makefile_path.is_file():
         pattern_to_remove = "docker compose"
         with open(makefile_path, encoding="utf-8") as f:
             original_lines = f.readlines()
-            filtered_lines = [
-                line for line in original_lines if pattern_to_remove not in line
-            ]
+            filtered_lines = [line for line in original_lines if pattern_to_remove not in line]
             if filtered_lines != original_lines:
                 with open(makefile_path, "w", encoding="utf-8") as f:
                     f.writelines(filtered_lines)
@@ -254,12 +255,11 @@ async def _setup_codebase(project_dir: str) -> str:
                     len(original_lines) - len(filtered_lines),
                     pattern_to_remove,
                 )
-    
+
     return f"Codebase set up at {project_dir}"
 
 
-@env.tool()
-async def _grade_solution(problem_id: str) -> dict[str, Any]:
+async def grade_solution(problem_id: str) -> dict[str, Any]:
     """Grade the agent's solution for a problem.
 
     Args:
@@ -268,18 +268,22 @@ async def _grade_solution(problem_id: str) -> dict[str, Any]:
     Returns:
         Dict with 'score' (float 0-1) and 'subscores' (dict of sub-scores)
 
-    This is an internal tool called by scenarios after agent interaction.
+    This is an internal function called by scenarios after agent interaction.
     """
     spec = get_problem_spec(problem_id)
     state = EnvironmentState()
+
+    if spec.solution_fn is None:
+        raise ValueError(f"Problem {problem_id} missing grading function")
+
     grade = spec.solution_fn(state)
-    
+
     logger.info(
         "Grading complete: score=%.2f, subscores=%s",
         grade.score,
         grade.subscores,
     )
-    
+
     return {
         "score": grade.score,
         "subscores": grade.subscores,

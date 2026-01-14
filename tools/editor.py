@@ -77,7 +77,7 @@ class EditTool:
         elif command == "undo_edit":
             return await self.undo_edit(_path)
         raise ToolError(
-            f"Unrecognized command {command}. The allowed commands for the {self.name} tool are: {', '.join(get_args(Command))}"
+            f"Unrecognized command {command}. The allowed commands are: {', '.join(get_args(Command))}"
         )
 
     def validate_path(self, command: str, path: Path):

@@ -62,7 +62,7 @@ class GradingRunner:
         self.test_files = test_files or []
         self.only_server = only_server
         self.grade_working_dir = "/tmp/grading_workspace_" + str(uuid.uuid4())
-        self.original_repo_path = os.environ.get("REPO_PATH", "/home/ubuntu/outline")
+        self.original_repo_path = os.environ.get("REPO_PATH", "/home/ubuntu/[PROJECT_NAME]")
 
         # Resolve problem_id from parameter or environment
         self.problem_id = problem_id or os.environ.get("PROBLEM_ID")

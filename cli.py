@@ -5,6 +5,7 @@ These scripts are exposed in pyproject.toml for command-line usage:
 - setup_problem: Set up a problem environment
 - grade_problem: Grade a solution
 """
+
 import asyncio
 import logging
 import os
@@ -13,7 +14,7 @@ from pathlib import Path
 import click
 
 from env import env
-from grading import EnvironmentState
+from grading import EnvironmentState, Grade
 from scenarios import get_problem_spec, get_project_dir, spec_to_statement
 from services import ServiceLoader, SimpleDinit
 
@@ -39,9 +40,7 @@ def _setup_codebase(project_dir: str) -> None:
         pattern_to_remove = "docker compose"
         with open(makefile_path, encoding="utf-8") as f:
             original_lines = f.readlines()
-            filtered_lines = [
-                line for line in original_lines if pattern_to_remove not in line
-            ]
+            filtered_lines = [line for line in original_lines if pattern_to_remove not in line]
             if filtered_lines != original_lines:
                 with open(makefile_path, "w", encoding="utf-8") as f:
                     f.writelines(filtered_lines)
@@ -69,10 +68,14 @@ async def _setup_problem(problem_id: str) -> str:
     return spec_to_statement(spec)
 
 
-async def _grade_problem(problem_id: str) -> dict:
+async def _grade_problem(problem_id: str) -> Grade:
     """Grade a problem solution."""
     spec = get_problem_spec(problem_id)
     state = EnvironmentState()
+
+    if spec.solution_fn is None:
+        raise ValueError(f"Problem {problem_id} missing grading function")
+
     return spec.solution_fn(state)
 
 

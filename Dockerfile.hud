@@ -129,9 +129,9 @@ RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | b
 #     GITHUB_TOKEN=$(echo "$GITHUB_TOKEN_BASE64" | base64 -d); \
 #     git clone https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com/your-org/your-repo /home/ubuntu/[PROJECT_NAME]
 # Example for public repo:
-# RUN git clone https://github.com/your-org/your-repo /home/ubuntu/outline
+# RUN git clone https://github.com/your-org/your-repo /home/ubuntu/[PROJECT_NAME]
 
-WORKDIR /home/ubuntu/outline
+WORKDIR /home/ubuntu/[PROJECT_NAME]
 
 # ========================= PATCH GENERATION =========================
 # Generate patches for ALL registered problems at build time.
@@ -147,9 +147,9 @@ COPY ./build_scripts/generate_all_patches.py /tmp/patch_gen/
 
 # Generate patches for all problems
 RUN mkdir -p /home/root/patches && \
-    cd /home/ubuntu/outline && \
+    cd /home/ubuntu/[PROJECT_NAME] && \
     PYTHONPATH=/tmp/patch_gen \
-    REPO_PATH=/home/ubuntu/outline \
+    REPO_PATH=/home/ubuntu/[PROJECT_NAME] \
     PATCHES_DIR=/home/root/patches \
     python3 /tmp/patch_gen/generate_all_patches.py
 
