@@ -43,22 +43,26 @@ class AgentPatchGrader(Grader):
         playwright_test_files: list[str] | None = None,
         mocha_test_files: list[str] | None = None,
         test_files: list[str] | None = None,
+        problem_id: str | None = None,
     ) -> tuple[float, dict]:
         """
         Compute a score based on whether the agent patch fixes the issue.
 
         Args:
             state: The current environment state
-            base: The baseline branch/commit name
-            test: The test branch/commit name
-            golden: The golden branch/commit name
+            base: The baseline branch/commit name (for metadata)
+            test: The test branch/commit name (for metadata)
+            golden: The golden branch/commit name (for metadata)
             test_files: List of test files to run
+            problem_id: Problem ID to select patches. If not provided,
+                       falls back to PROBLEM_ID env var.
 
         Returns:
             tuple: (score, metadata) where score is 1.0 if agent patch fixes the issue, 0.0 otherwise
         """
         # Create and run the grading runner
-        from .app import ONLY_SERVER
+        # Resolve problem_id from parameter or environment
+        resolved_problem_id = problem_id or os.environ.get("PROBLEM_ID")
 
         runner = GradingRunner(
             base=base,
@@ -67,7 +71,7 @@ class AgentPatchGrader(Grader):
             playwright_test_files=playwright_test_files,
             mocha_test_files=mocha_test_files,
             test_files=test_files,
-            only_server=ONLY_SERVER,
+            problem_id=resolved_problem_id,
         )
 
         success, metadata = runner.run_grading()

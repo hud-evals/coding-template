@@ -1,4 +1,6 @@
 """Grading system for coding environment tasks."""
+
+from .constants import SAMPLE_REPO_URL
 from .graders import (
     AgentPatchGrader,
     CodeFileGrader,
@@ -8,6 +10,7 @@ from .graders import (
 )
 from .runner import GradingRunner
 from .spec import (
+    PROBLEM_REGISTRY,
     EnvironmentState,
     Grade,
     Grader,
@@ -15,12 +18,12 @@ from .spec import (
     ProblemSpec,
     SubGrade,
     problem,
-    PROBLEM_REGISTRY,
 )
 from .utils import merge_junits
 
 __all__ = [
     "AgentPatchGrader",
+    "SAMPLE_REPO_URL",
     "CodeFileGrader",
     "DefaultTestCasesPassingGrader",
     "DirectoryGrader",

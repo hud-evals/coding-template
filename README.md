@@ -6,29 +6,31 @@ A full coding environment for agent evaluations. Provides bash, file editing, an
 
 ## Template Setup
 
-Edit `Dockerfile.hud` to configure your project:
+Replace `[PROJECT_NAME]` throughout the template with your project name. Then, edit `Dockerfile.hud` to configure your project:
 
 ```dockerfile
-# 1. Clone your project (uncomment and edit)
-RUN git clone https://github.com/your-org/your-repo /home/ubuntu/myproject
+# 1. Configure your repository URL (or pass this as a build argument)
+ARG REPO_URL=https://github.com/your-org/your-repo
 
 # 2. Set working directory
-WORKDIR /home/ubuntu/myproject
+WORKDIR /home/ubuntu/[PROJECT_NAME]
 
-# 3. Configure branches for grading
-ARG TEST_BRANCH=test          # Agent works here
-ARG GOLDEN_BRANCH=solution    # Reference solution
-ARG BASELINE_BRANCH=main      # Starting state
+# 3. (Optional) Before you build the Dockerfile, set CODING_GITHUB_TOKEN as an environment variable locally (not inside the Dockerfile)
+
+# This will be mounted as a secret if provided and is necessary for cloning private repositories
+export CODING_GITHUB_TOKEN=github_pat_XXX
 ```
 
-The **3-branch pattern**:
+Every task in `tasks/*.py` follows the **3-branch pattern**, where each branch exists in the source repo cloned in the Dockerfile:
 | Branch | Purpose |
 |--------|---------|
-| `baseline` | Starting state the agent sees |
-| `test` | Where agent makes changes |
-| `golden` | Correct solution (for grading) |
+| `baseline` | Starting state the agent sees, where the agent makes changes |
+| `test` | Contains tests that grade the agent's solution |
+| `golden` | Correct solution for validation and/or training |
 
-If you're **not using git-based problems**, comment out the git section in the Dockerfile (lines ~128-154).
+Git patches will automatically be generated for every branch defined in each task.
+
+If you're **not using git-based problems**, comment out the git section in the Dockerfile (lines ~126-166).
 
 ## 1. Deploy to Platform
 
@@ -165,8 +167,11 @@ async with hud.eval(tasks, variants=variants, group=2) as ctx:
 This environment requires Docker (for VNC, Postgres, etc.). Use `hud dev` with hot-reload:
 
 ```bash
-# 1. Build the Docker image (first time only)
-hud build
+# 1a. Build the Docker image (first time only)
+hud build . --build-arg REPO_URL=https://github.com/your-org/your-repo
+
+# 1b. Build the Docker image with a build secret (for private repos)
+hud build . --build-arg REPO_URL=https://github.com/your-org/your-repo --secret id=CODING_GITHUB_TOKEN,env=CODING_GITHUB_TOKEN
 
 # 2. Start with hot-reload on tasks/grading
 hud dev -w tasks -w grading --port 8765

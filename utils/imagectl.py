@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Build Rocket.Chat Docker images for each registered problem's baseline branch and
-optionally push them. Mirrors filtering logic from utils/generate_problems_json.py.
+Build Docker images for each registered problem's baseline branch and
+optionally push them.
 
 Behavior:
-- Imports all extractors to populate PROBLEM_REGISTRY
-- Filters problems by review level, ids, include-too-hard, include-demo
+- Imports all tasks to populate PROBLEM_REGISTRY
+- Filters problems by ids
 - Computes image tag as base + spec.id (base is a required first argument)
 - Actions controlled by flags:
   --build/-b: Build Docker images
@@ -23,26 +23,28 @@ import argparse
 import json
 import logging
 import os
-import queue
 import subprocess
 import sys
-import threading
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Literal, get_args
+from typing import Literal
 
 # Ensure MCP tools do not load during import
 os.environ["MCP_TESTING_MODE"] = "0"
 
-import hud_controller.extractors
-from hud_controller.spec import PROBLEM_REGISTRY, ReviewLevel
-from hud_controller.utils import import_submodules
+# Add parent directory to path for local imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import tasks
+from grading.spec import PROBLEM_REGISTRY
+from grading.utils import import_submodules
+from scenarios import spec_to_statement
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-# Import all extractors so their @problem decorators register specs
-import_submodules(hud_controller.extractors)
+# Import all tasks so their @problem decorators register specs
+import_submodules(tasks)
 
 
 def repo_root() -> str:
@@ -59,36 +61,20 @@ def add_common_filters(parser: argparse.ArgumentParser) -> None:
         help="Required image base name (the problem id will be appended)",
     )
 
-    review_levels = get_args(ReviewLevel)
-    for level in review_levels:
-        parser.add_argument(
-            f"--{level.replace('-', '_')}",
-            action="store_true",
-            help=f"Include problems with review level: {level}",
-        )
-
     parser.add_argument("--ids", nargs="+", help="Include only problems with the specified ids")
     parser.add_argument(
         "--ids-file",
         help="Path to a file containing problem ids, one per line (use '-' for stdin)",
     )
     parser.add_argument(
-        "--include-too-hard",
-        action="store_true",
-        help="Include problems marked as too hard",
-        default=False,
-    )
-    parser.add_argument(
-        "--include-demo",
-        action="store_true",
-        help="Include demo problems",
-        default=False,
-    )
-    parser.add_argument(
         "--hints",
         choices=["none", "all"],
         default="none",
         help="Hint mode to build: none (default), all. Sets HINTS for the image build.",
+    )
+    parser.add_argument(
+        "--repo-url",
+        help="Git repository URL to clone (or set REPO_URL env var)",
     )
 
 
@@ -117,30 +103,18 @@ class ProcessedSpec:
 
 
 def filter_specs(args: argparse.Namespace) -> list[ProcessedSpec]:
-    review_levels = get_args(ReviewLevel)
-    selected_review_levels: list[str] = []
-    for level in review_levels:
-        if getattr(args, level.replace("-", "_")):
-            selected_review_levels.append(level)
-
     selected_ids = compute_selected_ids(args)
 
     filtered: list[ProcessedSpec] = []
     for spec in PROBLEM_REGISTRY:
-        if selected_review_levels and spec.review_level not in selected_review_levels:
-            continue
         if selected_ids and spec.id not in selected_ids:
-            continue
-        if spec.too_hard and not args.include_too_hard:
-            continue
-        if spec.demo and not args.include_demo:
             continue
 
         image_base = args.base
 
         processed = ProcessedSpec(
             id=spec.id,
-            image=image_base + spec.id,
+            image=image_base,
             base=spec.base,
             test=spec.test,
             golden=spec.golden,
@@ -167,37 +141,42 @@ def run_command(cmd: list[str], prefix: str) -> int:
     return int(process.returncode or 0)
 
 
-def build_image(
-    image: str,
-    baseline_branch: str,
-    test_branch: str,
-    golden_branch: str,
-    context_dir: str,
-    *,
-    hints: str,
-    problem_id: str,
-) -> bool:
+def build_single_image(image: str, context_dir: str, *, hints: str, repo_url: str | None = None) -> bool:
+    """Build a single Docker image containing all problems.
+
+    Patches for all problems are generated at build time and stored in /home/root/patches/.
+    The PROBLEM_ID env var selects which patches to apply at runtime.
+    """
+    github_token = os.environ.get("CODING_GITHUB_TOKEN", "")
+    if not github_token:
+        logger.warning("CODING_GITHUB_TOKEN not set - private repo clone may fail")
+
+    repo_url = repo_url or os.environ.get("REPO_URL", "")
+    if not repo_url:
+        logger.error("REPO_URL not set - pass --repo-url or set REPO_URL env var")
+        return False
+
     cmd = [
         "docker",
         "build",
         "-t",
         image,
+    ]
+
+    if github_token:
+        cmd.extend(["--secret", "id=github_token,env=CODING_GITHUB_TOKEN"])
+
+    cmd.extend([
+        "-f",
+        os.path.join(context_dir, "Dockerfile.hud"),
         "--build-arg",
-        f"PROBLEM_ID={problem_id}",
-        "--build-arg",
-        f"BASELINE_BRANCH={baseline_branch}",
-        "--build-arg",
-        f"TEST_BRANCH={test_branch}",
-        "--build-arg",
-        f"GOLDEN_BRANCH={golden_branch}",
+        f"REPO_URL={repo_url}",
         "--build-arg",
         f"HINTS={hints}",
         "--add-host=host.docker.internal:172.17.0.1",
         context_dir,
-    ]
-    logger.info(
-        f"Building image {image} (BASELINE_BRANCH={baseline_branch}, TEST_BRANCH={test_branch}, GOLDEN_BRANCH={golden_branch}, HINTS={hints}, PROBLEM_ID={problem_id})"
-    )
+    ])
+    logger.info(f"Building image {image} (HINTS={hints})")
     rc = run_command(cmd, prefix=f"[build {image}] ")
     if rc != 0:
         logger.error(f"Build failed for {image} (exit code {rc})")
@@ -241,276 +220,134 @@ def push_image(image: str) -> bool:
     return True
 
 
-def generate_problems_json(specs: list[ProcessedSpec], output_file: str = "problems-metadata.json") -> None:
-    """
-    Generate problems-metadata.json file from filtered specs.
-    Based on utils/generate_problems_json.py
-    """
+def hud_dict(spec: ProcessedSpec, local: bool) -> dict:
+    """Generate v4-compatible HUD task dict."""
+    original_spec = next((s for s in PROBLEM_REGISTRY if s.id == spec.id), None)
+    hints_enabled = spec.hints == "all"
+
+    if original_spec:
+        full_prompt = spec_to_statement(original_spec, hints_enabled=hints_enabled)
+    else:
+        full_prompt = f"Complete task {spec.id}."
+
+    result = {
+        "id": spec.id,
+        "prompt": full_prompt,
+        "setup_tool": {
+            "name": "setup_problem",
+            "arguments": {"problem_id": spec.id},
+        },
+        "evaluate_tool": {
+            "name": "grade_problem",
+            "arguments": {"problem_id": spec.id, "transcript": "dummy transcript"},
+        },
+        "agent_config": {
+            "allowed_tools": ["*"],
+            "disallowed_tools": ["*setup*", "*evaluate*", "*grade*"],
+        },
+    }
+
+    if local:
+        result["mcp_config"] = {
+            "local": {
+                "command": "docker",
+                "args": [
+                    "run",
+                    "--rm",
+                    "-i",
+                    spec.image,
+                ],
+            }
+        }
+    else:
+        result["mcp_config"] = {
+            "hud": {
+                "url": "https://mcp.hud.so/v3/mcp",
+                "headers": {
+                    "Authorization": "Bearer ${HUD_API_KEY}",
+                    "Mcp-Image": spec.image,
+                },
+            }
+        }
+
+    return result
+
+
+def problems_metadata_dict(spec: ProcessedSpec) -> dict:
+    """Generate problem metadata dict for problems-metadata.json."""
+    original_spec = next((s for s in PROBLEM_REGISTRY if s.id == spec.id), None)
+    hints_enabled = spec.hints == "all"
+
+    if original_spec:
+        full_prompt = spec_to_statement(original_spec, hints_enabled=hints_enabled)
+        difficulty = original_spec.difficulty
+        task_type = original_spec.task_type
+    else:
+        full_prompt = f"Complete task {spec.id}."
+        difficulty = "medium"
+        task_type = "coding"
+
+    return {
+        "image": spec.image,
+        "startup_command": "/mcp_server/.venv/bin/hud_eval",
+        "id": spec.id,
+        "required_tools": ["bash", "str_replace_editor"],
+        "metadata": {
+            "difficulty": difficulty,
+            "description": full_prompt,
+            "task_type": task_type,
+        },
+        "system_prompt": "",
+        "enable_anthropic_api": True,
+        "enabled_package_managers": [],
+        "output_directory": "/tmp/out",
+    }
+
+
+def generate_problems_metadata_json(specs: list[ProcessedSpec]) -> None:
+    """Generate problems-metadata.json file."""
+    problems = [problems_metadata_dict(spec) for spec in specs]
+
     # [CUSTOMIZE] Update metadata for your project
-    out = {
+    output = {
         "problem_set": {
             "owner": "[YOUR_ORG]",
             "name": "[PROBLEM_SET_NAME]",
-            "version": "1.0.0",
-            "created_at": "2025-04-10T00:00:00Z",
             "description": "[PROBLEM_SET_DESCRIPTION]",
-            "metadata": {"category": "coding", "language": "[LANGUAGE]", "difficulty": "medium"},
-            "problems": [],
+            "problems": problems,
+            "version": "1.0.0",
+            "created_at": "2025-01-01T00:00:00Z",
+            "metadata": {
+                "category": "coding",
+                "language": "[LANGUAGE]",
+                "difficulty": "medium",
+            },
         }
     }
 
-    for spec in specs:
-        # Get the original spec from PROBLEM_REGISTRY to access all fields
-        original_spec = next((s for s in PROBLEM_REGISTRY if s.id == spec.id), None)
-        if original_spec:
-            out["problem_set"]["problems"].append(
-                {
-                    "id": spec.id,
-                    "image": spec.image,
-                    "startup_command": original_spec.startup_command,
-                    "required_tools": ["computer", "bash", "str_replace_editor"],
-                    "scratchpad": "allowed",
-                    "enabled_package_managers": [],
-                    "metadata": {
-                        "difficulty": original_spec.difficulty,
-                        "task_type": original_spec.task_type,
-                        "review_level": original_spec.review_level,
-                        "description": original_spec.description,
-                    },
-                }
-            )
-
+    output_file = "problems-metadata.json"
     with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(out, f, indent=2)
+        json.dump(output, f, indent=2)
         f.write("\n")
-    logger.info(f"Generated {output_file} with {len(out['problem_set']['problems'])} problems")
+    logger.info(f"Generated {output_file} with {len(problems)} problems")
 
 
-def run_pipeline(
-    specs: list[ProcessedSpec],
-    *,
-    build: bool,
-    push: bool,
-    validate: bool,
-    jobs: int = 1,
-) -> tuple[list[str], list[str], list[str], list[str], list[str], list[str]]:
-    """
-    Execute the build/push pipeline with specified number of concurrent workers.
+def generate_jsons(specs: list[ProcessedSpec]) -> None:
+    """Generate local and remote HUD JSON files + problems-metadata.json."""
+    combinations: list[tuple[bool, str]] = [
+        (True, "local-hud.json"),
+        (False, "remote-hud.json"),
+    ]
 
-    Args:
-        specs: List of problem specs to build/push
-        build: Whether to build Docker images
-        push: Whether to push images to registry
-        validate: Whether to validate images
-        jobs: Number of parallel workers for operations
+    for local, output_file in combinations:
+        results = [hud_dict(spec, local=local) for spec in specs]
+        with open(output_file, "w", encoding="utf-8") as f:
+            json.dump(results, f, indent=2)
+            f.write("\n")
+        logger.info(f"Generated {output_file} with {len(results)} problems")
 
-    Returns:
-        (built_success, built_failed, validated_success, validated_failed, pushed_success, pushed_failed)
-    """
-    context_dir = repo_root()
-
-    build_queue: queue.Queue[ProcessedSpec | None] = queue.Queue()
-    validate_queue: queue.Queue[tuple[ProcessedSpec, str] | None] = queue.Queue()
-    push_queue: queue.Queue[str | None] = queue.Queue()
-
-    built_success: list[str] = []
-    built_failed: list[str] = []
-    validated_success: list[str] = []
-    validated_failed: list[str] = []
-    pushed_success: list[str] = []
-    pushed_failed: list[str] = []
-    lists_lock = threading.Lock()
-
-    total_builds = len(specs) if build else 0
-    total_validates = len(specs) if validate else 0
-    total_pushes = len(specs) if push else 0
-    build_index_counter = [0]
-    validate_index_counter = [0]
-    push_index_counter = [0]
-
-    def build_worker() -> None:
-        while True:
-            item = build_queue.get()
-            if item is None:
-                build_queue.task_done()
-                break
-            spec = item
-            image = spec.image
-            ok = build_image(
-                image=image,
-                baseline_branch=spec.base,
-                test_branch=spec.test,
-                golden_branch=spec.golden,
-                context_dir=context_dir,
-                hints=spec.hints,
-                problem_id=spec.id,
-            )
-            with lists_lock:
-                build_index_counter[0] += 1
-                current_index = build_index_counter[0]
-                (built_success if ok else built_failed).append(image)
-            percent = int((current_index / total_builds) * 100) if total_builds > 0 else 0
-            logger.info(f"=========== BUILD {current_index}/{total_builds} ({percent}% completed) ===========")
-            if ok:
-                if validate:
-                    # Queue for validation
-                    validate_queue.put((spec, image))
-                elif push:
-                    # If no validation, queue directly for push
-                    push_queue.put(image)
-            build_queue.task_done()
-
-    def push_worker() -> None:
-        while True:
-            image = push_queue.get()
-            if image is None:
-                push_queue.task_done()
-                break
-            # Verify image exists locally before pushing
-            if not image_exists_locally(image):
-                logger.error(f"Image not found locally for push: {image}")
-                with lists_lock:
-                    push_index_counter[0] += 1
-                    current_index = push_index_counter[0]
-                    pushed_failed.append(image)
-                percent = int((current_index / total_pushes) * 100) if total_pushes > 0 else 0
-                logger.info(f"=========== PUSH {current_index}/{total_pushes} ({percent}% completed) ===========")
-                push_queue.task_done()
-                continue
-            ok = push_image(image)
-            with lists_lock:
-                push_index_counter[0] += 1
-                current_index = push_index_counter[0]
-                (pushed_success if ok else pushed_failed).append(image)
-            percent = int((current_index / total_pushes) * 100) if total_pushes > 0 else 0
-            logger.info(f"=========== PUSH {current_index}/{total_pushes} ({percent}% completed) ===========")
-            push_queue.task_done()
-
-    def validate_worker() -> None:
-        while True:
-            item = validate_queue.get()
-            if item is None:
-                validate_queue.task_done()
-                break
-            spec, image = item
-            ok = validate_image(image, spec.id)
-            with lists_lock:
-                validate_index_counter[0] += 1
-                current_index = validate_index_counter[0]
-                (validated_success if ok else validated_failed).append(image)
-            percent = int((current_index / total_validates) * 100) if total_validates > 0 else 0
-            logger.info(f"=========== VALIDATE {current_index}/{total_validates} ({percent}% completed) ===========")
-            if ok and push:
-                # Only push if validation succeeded
-                push_queue.put(image)
-            validate_queue.task_done()
-
-    # Create worker threads based on jobs parameter
-    threads: list[threading.Thread] = []
-
-    # If not building, handle validate and/or push for existing images
-    if not build:
-        if validate:
-            for i in range(jobs):
-                t_validate = threading.Thread(target=validate_worker, daemon=True, name=f"validate-worker-{i + 1}")
-                t_validate.start()
-                threads.append(t_validate)
-
-            if push:
-                for i in range(jobs):
-                    t_push = threading.Thread(target=push_worker, daemon=True, name=f"push-worker-{i + 1}")
-                    t_push.start()
-                    threads.append(t_push)
-
-            for spec in specs:
-                # Check if image exists locally before queuing for validation
-                if image_exists_locally(spec.image):
-                    validate_queue.put((spec, spec.image))
-                else:
-                    logger.error(f"Image not found locally for validation: {spec.image}")
-                    with lists_lock:
-                        validated_failed.append(spec.image)
-
-            # Send termination signals
-            for _ in range(jobs):
-                validate_queue.put(None)
-            validate_queue.join()
-
-            if push:
-                for _ in range(jobs):
-                    push_queue.put(None)
-                push_queue.join()
-        elif push:
-            # No validation, direct push
-            for i in range(jobs):
-                t_push = threading.Thread(target=push_worker, daemon=True, name=f"push-worker-{i + 1}")
-                t_push.start()
-                threads.append(t_push)
-
-            for spec in specs:
-                if image_exists_locally(spec.image):
-                    push_queue.put(spec.image)
-                else:
-                    logger.error(f"Image not found locally for push: {spec.image}")
-                    with lists_lock:
-                        pushed_failed.append(spec.image)
-
-            # Send termination signals for all push workers
-            for _ in range(jobs):
-                push_queue.put(None)
-            push_queue.join()
-
-        for t in threads:
-            t.join()
-        return built_success, built_failed, validated_success, validated_failed, pushed_success, pushed_failed
-
-    # Start validation workers if validating
-    if validate:
-        for i in range(jobs):
-            t_validate = threading.Thread(target=validate_worker, daemon=True, name=f"validate-worker-{i + 1}")
-            t_validate.start()
-            threads.append(t_validate)
-
-    # Start push workers if pushing
-    if push:
-        for i in range(jobs):
-            t_push = threading.Thread(target=push_worker, daemon=True, name=f"push-worker-{i + 1}")
-            t_push.start()
-            threads.append(t_push)
-
-    # Start build workers
-    for i in range(jobs):
-        t_build = threading.Thread(target=build_worker, daemon=True, name=f"build-worker-{i + 1}")
-        t_build.start()
-        threads.append(t_build)
-
-    # Enqueue all builds
-    for spec in specs:
-        build_queue.put(spec)
-
-    # Send termination signals for all build workers
-    for _ in range(jobs):
-        build_queue.put(None)
-
-    # Wait for builds
-    build_queue.join()
-
-    # If validating, send termination signals and wait for validation queue
-    if validate:
-        for _ in range(jobs):
-            validate_queue.put(None)
-        validate_queue.join()
-
-    # If pushing concurrently, send termination signals and wait for push queue
-    if push:
-        for _ in range(jobs):
-            push_queue.put(None)
-        push_queue.join()
-
-    for t in threads:
-        t.join()
-
-    return built_success, built_failed, validated_success, validated_failed, pushed_success, pushed_failed
+    # Also generate problems-metadata.json
+    generate_problems_metadata_json(specs)
 
 
 def main(argv: Iterable[str] | None = None) -> int:
@@ -560,54 +397,47 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     # Generate JSON if requested (runs first)
     if args.json:
-        generate_problems_json(specs)
+        generate_jsons(specs)
 
-    # Only run pipeline if build, push, or validate is requested
-    if args.build or args.push or args.validate:
-        # Validate that if push or validate is requested without build, images exist
-        if (args.push or args.validate) and not args.build:
-            missing_images = [spec.image for spec in specs if not image_exists_locally(spec.image)]
-            if missing_images:
-                logger.warning("Warning: The following images do not exist locally and --build was not specified:")
-                for img in missing_images:
-                    logger.warning(f"  - {img}")
-                logger.warning("These images will fail to push/validate.")
+    # Build single image (v5: one image contains all problems)
+    image_name = args.base
+    context_dir = repo_root()
+    build_failed = False
 
-        built_ok, built_fail, validated_ok, validated_fail, pushed_ok, pushed_fail = run_pipeline(
-            specs,
-            build=args.build,
-            push=args.push,
-            validate=args.validate,
-            jobs=args.jobs,
-        )
-    else:
-        # Only JSON was requested, no pipeline run
-        built_ok = built_fail = validated_ok = validated_fail = pushed_ok = pushed_fail = []
+    if args.build:
+        hints = getattr(args, "hints", "none")
+        repo_url = getattr(args, "repo_url", None)
+        if not build_single_image(image_name, context_dir, hints=hints, repo_url=repo_url):
+            build_failed = True
 
-    # Only print summaries if pipeline was run
-    if args.build or args.push or args.validate:
+    # Push the single image
+    if args.push and not build_failed:
+        if not image_exists_locally(image_name):
+            logger.error(f"Image not found locally for push: {image_name}")
+            build_failed = True
+        else:
+            if not push_image(image_name):
+                build_failed = True
+
+    # Validate per-problem (runs inside the single image)
+    validated_ok: list[str] = []
+    validated_fail: list[str] = []
+    if args.validate and not build_failed:
+        for spec in specs:
+            if validate_image(image_name, spec.id):
+                validated_ok.append(spec.id)
+            else:
+                validated_fail.append(spec.id)
+
         logger.info("")
-        if args.build and (built_ok or built_fail):
-            logger.info("Build summary:")
-            if built_ok:
-                logger.info(f"  Built successfully ({len(built_ok)}): {', '.join(built_ok)}")
-            if built_fail:
-                logger.info(f"  Build failures   ({len(built_fail)}): {', '.join(built_fail)}")
-        if args.validate and (validated_ok or validated_fail):
-            logger.info("Validation summary:")
-            if validated_ok:
-                logger.info(f"  Validated successfully ({len(validated_ok)}): {', '.join(validated_ok)}")
-            if validated_fail:
-                logger.info(f"  Validation failures   ({len(validated_fail)}): {', '.join(validated_fail)}")
-        if args.push and (pushed_ok or pushed_fail):
-            logger.info("Push summary:")
-            if pushed_ok:
-                logger.info(f"  Pushed successfully ({len(pushed_ok)}): {', '.join(pushed_ok)}")
-            if pushed_fail:
-                logger.info(f"  Push failures      ({len(pushed_fail)}): {', '.join(pushed_fail)}")
+        logger.info("Validation summary:")
+        if validated_ok:
+            logger.info(f"  Validated successfully ({len(validated_ok)}): {', '.join(validated_ok)}")
+        if validated_fail:
+            logger.info(f"  Validation failures   ({len(validated_fail)}): {', '.join(validated_fail)}")
 
     # Exit non-zero if any failures
-    if built_fail or validated_fail or pushed_fail:
+    if build_failed or validated_fail:
         return 1
     return 0
 

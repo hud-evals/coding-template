@@ -121,36 +121,43 @@ RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | b
 # =================================================================
 
 # 0) Clone or copy your project repository
-# Replace with your repo URL and credentials if needed
-# ENV GITHUB_TOKEN_BASE64=[YOUR_GITHUB_TOKEN_BASE64]
-# ENV GITHUB_USERNAME=[YOUR_GITHUB_USERNAME]
-# Example for private repo:
-# RUN cd /home/ubuntu && \
-#     GITHUB_TOKEN=$(echo "$GITHUB_TOKEN_BASE64" | base64 -d); \
-#     git clone https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com/your-org/your-repo /home/ubuntu/[PROJECT_NAME]
-# Example for public repo:
-# RUN git clone https://github.com/your-org/your-repo /home/ubuntu/[PROJECT_NAME]
+# Pass REPO_URL as a build arg:
+#   hud build . --build-arg REPO_URL=https://github.com/your-org/your-repo
+# For private repos, also pass the secret (requires hud-python >= 0.5.13):
+#   hud build . --build-arg REPO_URL=https://github.com/your-org/your-repo \
+#               --secret id=CODING_GITHUB_TOKEN,env=CODING_GITHUB_TOKEN
+ARG REPO_URL
+
+# Expose REPO_URL as an environment variable for conditionally enabling/disabling
+# code for compatibility with the sample repo. See comments marked with [CUSTOMIZE]
+#Remove if not needed.
+ENV REPO_URL=${REPO_URL}
+
+# Clone and fetch all branches (needed for runtime checkout of baseline/test/golden)
+# If CODING_GITHUB_TOKEN secret is provided, use it for private repos; otherwise clone public repo
+RUN --mount=type=secret,id=CODING_GITHUB_TOKEN,uid=1000 \
+    if [ -f /run/secrets/CODING_GITHUB_TOKEN ]; then \
+        CODING_GITHUB_TOKEN=$(cat /run/secrets/CODING_GITHUB_TOKEN) && \
+        git clone https://${CODING_GITHUB_TOKEN}@${REPO_URL#https://} /home/ubuntu/[PROJECT_NAME]; \
+    else \
+        git clone ${REPO_URL} /home/ubuntu/[PROJECT_NAME]; \
+    fi && \
+    cd /home/ubuntu/[PROJECT_NAME] && \
+    git fetch --all
 
 WORKDIR /home/ubuntu/[PROJECT_NAME]
 
-# Checkout branches for testing (baseline, test, golden)
-ARG TEST_BRANCH=[test_branch_name]
-ARG GOLDEN_BRANCH=[golden_branch_name]
-ARG BASELINE_BRANCH=[baseline_branch_name]
-RUN git checkout $BASELINE_BRANCH && \
-    git checkout $TEST_BRANCH && \
-    git checkout $GOLDEN_BRANCH && \
-    git checkout $BASELINE_BRANCH
-
-# Generate patches for grading
+# Protect .git from agent access (agent runs as ubuntu/uid 1000, MCP server runs as root)
+# This allows setup_problem to:
+# 1. Generate patches at runtime (base→test, base→golden)
+# 2. Checkout the baseline branch
+# The agent cannot access git history or checkout solution branches
 USER root
-RUN mkdir -p /home/root && \
-    sudo -u ubuntu git diff $BASELINE_BRANCH $TEST_BRANCH > /home/root/test.patch && \
-    sudo -u ubuntu git diff $BASELINE_BRANCH $GOLDEN_BRANCH > /home/root/golden.patch
+RUN mkdir -p /home/root/patches && \
+    chown -R root:root /home/ubuntu/[PROJECT_NAME]/.git && \
+    chmod -R 700 /home/ubuntu/[PROJECT_NAME]/.git && \
+    git config --global --add safe.directory /home/ubuntu/[PROJECT_NAME]
 USER ubuntu
-
-# Overwrite git history to avoid leaking info
-RUN rm -rf .git && git init && git add . && git commit -m "Initial commit"
 
 # 1) Install language runtime/compiler
 # === FOR NODE.JS/TYPESCRIPT (example) ===
@@ -298,7 +305,7 @@ COPY ./README.md /mcp_server/README.md
 WORKDIR /mcp_server
 
 ENV RUST_LOG=warn
-RUN uv venv && . .venv/bin/activate && uv sync && uv pip install -e .
+RUN uv venv && . .venv/bin/activate && uv sync --no-install-project --extra dev && uv pip install -e .
 ENV PYTHONPATH=/mcp_server/.venv/lib/python3.12/site-packages:/mcp_server
 ENV PATH=/mcp_server/.venv/bin:$PATH
 
@@ -319,8 +326,9 @@ EXPOSE 6080 3000
 ARG HINTS="none"
 ENV HINTS=$HINTS
 
-ARG PROBLEM_ID
-ENV PROBLEM_ID=$PROBLEM_ID
+# PROBLEM_ID is set at runtime via scenario args, not at build time
+# It selects which patches to use from /home/root/patches/{problem_id}/
+ENV PROBLEM_ID=""
 
 # Run the HUD MCP server
 CMD ["hud", "dev", "env:env", "--stdio"]
