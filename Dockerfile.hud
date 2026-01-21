@@ -53,6 +53,7 @@ RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | b
 #   hud build . --build-arg REPO_URL=https://github.com/your-org/your-repo \
 #               --secret id=CODING_GITHUB_TOKEN,env=CODING_GITHUB_TOKEN
 ARG REPO_URL
+ARG FOLDER_NAME="project"
 
 # Expose REPO_URL as an environment variable for conditionally enabling/disabling
 # code for compatibility with the sample repo. See comments marked with [CUSTOMIZE]
@@ -64,14 +65,14 @@ ENV REPO_URL=${REPO_URL}
 RUN --mount=type=secret,id=CODING_GITHUB_TOKEN,uid=1000 \
     if [ -f /run/secrets/CODING_GITHUB_TOKEN ]; then \
         CODING_GITHUB_TOKEN=$(cat /run/secrets/CODING_GITHUB_TOKEN) && \
-        git clone https://${CODING_GITHUB_TOKEN}@${REPO_URL#https://} /home/ubuntu/[PROJECT_NAME]; \
+        git clone https://${CODING_GITHUB_TOKEN}@${REPO_URL#https://} /home/ubuntu/${FOLDER_NAME}; \
     else \
-        git clone ${REPO_URL} /home/ubuntu/[PROJECT_NAME]; \
+        git clone ${REPO_URL} /home/ubuntu/${FOLDER_NAME}; \
     fi && \
-    cd /home/ubuntu/[PROJECT_NAME] && \
+    cd /home/ubuntu/${FOLDER_NAME} && \
     git fetch --all
 
-WORKDIR /home/ubuntu/[PROJECT_NAME]
+WORKDIR /home/ubuntu/${FOLDER_NAME}
 
 # Protect .git from agent access (agent runs as ubuntu/uid 1000, MCP server runs as root)
 # This allows setup_problem to:
@@ -80,14 +81,14 @@ WORKDIR /home/ubuntu/[PROJECT_NAME]
 # The agent cannot access git history or checkout solution branches
 USER root
 RUN mkdir -p /home/root/patches && \
-    chown -R root:root /home/ubuntu/[PROJECT_NAME]/.git && \
-    chmod -R 700 /home/ubuntu/[PROJECT_NAME]/.git && \
-    git config --global --add safe.directory /home/ubuntu/[PROJECT_NAME]
+    chown -R root:root /home/ubuntu/${FOLDER_NAME}/.git && \
+    chmod -R 700 /home/ubuntu/${FOLDER_NAME}/.git && \
+    git config --global --add safe.directory /home/ubuntu/${FOLDER_NAME}
 USER ubuntu
 
 # 1) Install language runtime/compiler
 # === FOR NODE.JS/TYPESCRIPT (example) ===
-# RUN NODE_VERSION_SPEC=$(jq -r '.engines.node // ""' /home/ubuntu/[PROJECT_NAME]/package.json) && \
+# RUN NODE_VERSION_SPEC=$(jq -r '.engines.node // ""' /home/ubuntu/${FOLDER_NAME}/package.json) && \
 #     NODE_VERSION=$(printf "%s" "$NODE_VERSION_SPEC" | grep -oE '<= *[0-9]+' | tail -n1 | sed -E 's/^[^0-9]*//') && \
 #     if [ -z "$NODE_VERSION" ]; then NODE_VERSION=$(printf "%s" "$NODE_VERSION_SPEC" | grep -oE '[0-9]+' | tail -n1); fi && \
 #     bash -c "source ~/.nvm/nvm.sh --no-use && nvm install $NODE_VERSION && nvm use $NODE_VERSION && nvm alias default $NODE_VERSION" && \
@@ -126,7 +127,7 @@ USER ubuntu
 # Already installed with rustup
 
 # 3) Install dependencies
-# RUN cd /home/ubuntu/[PROJECT_NAME] && [INSTALL_DEPENDENCIES_COMMAND]
+# RUN cd /home/ubuntu/${FOLDER_NAME} && [INSTALL_DEPENDENCIES_COMMAND]
 # Examples:
 #   Node.js: yarn install
 #   Python: pip install -r requirements.txt  or  poetry install
@@ -139,7 +140,7 @@ USER ubuntu
 # Configure your test framework to output JUnit XML.
 #
 # === FOR JEST (Node.js) ===
-# RUN cd /home/ubuntu/[PROJECT_NAME] && \
+# RUN cd /home/ubuntu/${FOLDER_NAME} && \
 #     yarn add jest-junit && \
 #     jq '.reporters = ["default", ["jest-junit", {"outputDirectory": "./", "outputName": "jest_results.xml"}]]' .jestconfig.json > .jestconfig.tmp && \
 #     mv .jestconfig.tmp .jestconfig.json
@@ -162,7 +163,7 @@ USER ubuntu
 # Use gtest_junit_output: --gtest_output=xml:test_results.xml
 
 # 5) Build the project
-# RUN cd /home/ubuntu/[PROJECT_NAME] && [BUILD_COMMAND]
+# RUN cd /home/ubuntu/${FOLDER_NAME} && [BUILD_COMMAND]
 # Examples:
 #   Node.js: yarn build  or  npm run build
 #   Python: (often no build step)  or  python setup.py build
