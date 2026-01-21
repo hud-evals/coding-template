@@ -4,58 +4,27 @@ FROM ubuntu:24.04 AS setup
 # Update and install core dependencies
 RUN apt-get update -y \
   && apt-get install -y --no-install-recommends \
-  vim \
-  openssl \
+  bash \
+  build-essential \
   ca-certificates \
   curl \
-  wget \
-  sudo \
-  bash \
-  python3 \
-  python3-pip \
-  python3-dev \
-  python3-wheel \
-  python3-venv \
-  libpq5 \
-  sqlite3 \
-  dbus-x11 \
-  xfonts-base \
-  xdotool \
-  psmisc \
-  build-essential \
-  python-is-python3 \
   git \
-  xauth \
   gnupg \
-  libcairo2-dev \
-  libjpeg-turbo8-dev \
-  libpng-dev \
-  libwebp-dev \
-  libtiff-dev \
-  libgif-dev \
-  libvips-dev \
-  libgstreamer1.0-0 \
-  libgtk-4-1 \
-  libgraphene-1.0-0 \
-  libwoff1 \
-  libevent-2.1-7 \
-  libgstreamer-plugins-base1.0-0 \
-  libgstreamer-plugins-good1.0-0 \
-  libgstreamer-gl1.0-0 \
-  libgstreamer-plugins-bad1.0-0 \
-  libavif16 \
-  libenchant-2-2 \
-  libsecret-1-0 \
-  libhyphen0 \
-  libmanette-0.2-0 \
-  libgles2 \
-  ruby \
-  rubygems-integration
+  libpq5 \
+  openssl \
+  python-is-python3 \
+  python3 \
+  python3-dev \
+  python3-pip \
+  python3-venv \
+  python3-wheel \
+  sqlite3 \
+  sudo \
+  vim \
+  wget \
+  && rm -rf /var/lib/apt/lists/*
 
 RUN update-ca-certificates
-
-# install fakes3
-RUN gem install fakes3 -v 0.2.5
 
 WORKDIR /
 
@@ -208,8 +177,6 @@ RUN python3 /build_scripts/alter_env_files.py
 
 # === End of PROJECT SETUP section ===
 
-# supress AT-SPI errors
-ENV NO_AT_BRIDGE=1
 USER root
 
 
