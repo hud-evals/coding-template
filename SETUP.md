@@ -4,9 +4,9 @@ This walkthrough will get you set up running a sample task from our [source repo
 
 ## 1. Deploy to Platform
 
-If you haven't already, connect this repo to hud.ai:
+If you haven't already, clone this template and connect the repo to hud.ai:
 
-1. Push to GitHub
+1. Clone this template repository on GitHub
 2. Go to [hud.ai](https://hud.ai) → **Environments** → **New Environment**
 3. Connect your GitHub repo
 4. Your environment builds automatically on each push. You can also build it manually via [your environment] > Build.
