@@ -75,10 +75,9 @@ def register_scenarios(env) -> None:
 
         This scenario:
         1. Sets PROBLEM_ID env var for patch selection
-        2. Starts dinit services
-        3. Sets up the codebase
-        4. Yields prompt to agent
-        5. Grades solution after agent finishes
+        2. Sets up the codebase
+        3. Yields prompt to agent
+        4. Grades solution after agent finishes
         """
         # Set PROBLEM_ID env var so grading runner can find the correct patches
         os.environ["PROBLEM_ID"] = problem_id

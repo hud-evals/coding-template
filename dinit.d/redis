@@ -1,4 +1,0 @@
-type = process
-command = redis-server --bind 0.0.0.0 --protected-mode no
-logfile = /var/log/dinit/redis.log
-smooth-recovery = true

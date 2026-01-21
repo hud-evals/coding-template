@@ -6,7 +6,7 @@ Development workflow:
 3. Edit tasks/*.py or grading/*.py - container auto-reloads
 4. Re-run this script to test changes
 
-Scenarios call internal tools (_start_services, _grade_solution) on the container.
+Scenarios call internal tools (_grade_solution) on the container.
 Task definitions and grading logic run inside the container (hot-reloaded).
 """
 import asyncio
@@ -124,7 +124,7 @@ async def main():
 
     await test_tools_standalone()
 
-    # Uncomment to run full scenarios (requires container with services):
+    # Uncomment to run full scenarios:
     # await test_solve_task_manual()
     # await test_solve_task_agent()
     # await test_distribution()

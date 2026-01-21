@@ -1,9 +1,0 @@
-type = scripted
-# Runs the postgres initialization script.
-# Requires: bash, sudo, psql, postgres user on the system.
-# Requires env vars: POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
-command = /usr/bin/sudo -E -u postgres /etc/dinit.d/setup_postgres_env.sh
-logfile = /var/log/dinit/setup_postgres_env.log
-waits-for = postgres
-# postgres may take a bit to start up, so we need to wait for it
-restart = true

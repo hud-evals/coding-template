@@ -271,17 +271,6 @@ RUN mv /usr/bin/mkcert /usr/bin/mkcert2 && \
 # add a line to sudoers file so that any user can run mkcert2 with sudo
 RUN echo "ubuntu ALL=(ALL) NOPASSWD: /usr/bin/mkcert2" >> /etc/sudoers
 
-# Setup and start dinit
-COPY dinit.d/ /etc/dinit.d/
-RUN mkdir -p /var/log/dinit && chmod 755 /var/log/dinit
-
-# Copy postgres init scripts (SQL and shell)
-COPY docker-entrypoint-initdb.d/ /docker-entrypoint-initdb.d/
-
-# Postgres config:
-ENV POSTGRES_USER=ubuntu
-ENV POSTGRES_PASSWORD=ubuntu
-ENV POSTGRES_DB=ubuntu
 
 # ================================ HUD Environment Setup ================================================
 FROM setup AS runtime
@@ -298,7 +287,6 @@ COPY ./scenarios.py /mcp_server/scenarios.py
 COPY ./tools /mcp_server/tools
 COPY ./grading /mcp_server/grading
 COPY ./tasks /mcp_server/tasks
-COPY ./services /mcp_server/services
 COPY ./pyproject.toml /mcp_server/pyproject.toml
 COPY ./README.md /mcp_server/README.md
 

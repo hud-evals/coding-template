@@ -1,3 +1,0 @@
-type=process
-command=/usr/local/bin/fakes3 -r  /fakes3_root -p 4569
-logfile=/var/log/dinit/fakes3.log

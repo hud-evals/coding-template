@@ -1,5 +1,0 @@
-type          = process
-command       = sudo -u postgres /usr/lib/postgresql/16/bin/postgres -D /var/lib/postgresql/16/main -c config_file=/etc/postgresql/16/main/postgresql.conf
-stop-command  = /usr/bin/pg_ctl -D /var/lib/postgresql/16/main stop -m fast -w
-logfile       = /var/log/dinit/postgres.log
-depends-on    = setup_postgres_data

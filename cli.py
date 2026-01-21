@@ -15,18 +15,9 @@ import click
 from env import env
 from grading import EnvironmentState, Grade
 from scenarios import get_problem_spec, get_project_dir, spec_to_statement
-from services import ServiceLoader, SimpleDinit
+
 
 logger = logging.getLogger(__name__)
-
-
-async def _start_services() -> None:
-    """Start all dinit services."""
-    logger.info("Starting dinit services")
-    loader = ServiceLoader(Path("/etc/dinit.d"))
-    services = loader.load_all()
-    engine = SimpleDinit(services)
-    engine.start("boot")
 
 
 def _setup_codebase(project_dir: str) -> None:
@@ -61,8 +52,6 @@ async def _setup_problem(problem_id: str) -> str:
     logger.info("Problem ID: %s", problem_id)
     logger.info("Spec: %s", spec)
 
-    # Start the dinit services
-    await _start_services()
     logger.info("=== Starting setup_problem for %s ===", problem_id)
     _setup_codebase(project_dir)
 

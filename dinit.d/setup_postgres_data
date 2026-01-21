@@ -1,3 +1,0 @@
-type = scripted
-command = /etc/dinit.d/setup_postgres_data.sh
-logfile = /var/log/dinit/setup_postgres_data.log

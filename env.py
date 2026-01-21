@@ -8,7 +8,6 @@ This environment provides tools for:
 Tools prefixed with _ are internal (hidden from agent, used by scenarios).
 Scenarios are defined in scenarios.py and registered at the bottom of this file.
 """
-import asyncio
 import logging
 import os
 from pathlib import Path
@@ -18,7 +17,6 @@ from hud import Environment
 
 from grading import EnvironmentState
 from scenarios import get_problem_spec, register_scenarios
-from services import ServiceLoader, SimpleDinit
 from tools import BashTool, ComputerTool, EditTool, ToolError
 
 logger = logging.getLogger(__name__)
@@ -207,26 +205,6 @@ async def computer(
 # ============================================================================
 
 
-async def start_services() -> str:
-    """Start all dinit services (postgres, redis, VNC, xfce4).
-
-    This is an internal tool called by scenarios before agent interaction.
-    """
-    logger.info("Starting dinit services")
-    loader = ServiceLoader(Path("/etc/dinit.d"))
-    services = loader.load_all()
-    engine = SimpleDinit(services)
-    engine.start("boot")
-    
-    # Wait for XFCE to fully start
-    test_mode = os.environ.get("MCP_TESTING_MODE", "1") in ["1", "true"]
-    delay = 5 if test_mode else 30
-    logger.info("Waiting %d seconds for XFCE...", delay)
-    await asyncio.sleep(delay)
-    
-    return "Services started successfully"
-
-
 async def setup_codebase(project_dir: str) -> str:
     """Set up the codebase for a coding task.
 
@@ -369,8 +347,6 @@ async def setup_problem(problem_id: str) -> str:
                 capture_output=True,
             )
 
-    # Start services and set up codebase
-    await start_services()
     await setup_codebase(project_dir)
 
     logger.info("=== SETUP_PROBLEM: %s ===", problem_id)

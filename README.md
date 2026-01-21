@@ -195,7 +195,6 @@ When you save a watched file, the MCP server restarts with fresh imports:
 | `tasks/*.py` | ✅ Yes |
 | `grading/*.py` | ✅ Yes |
 | `tools/*.py` | ✅ Yes (if watched) |
-| dinit services (postgres, redis, vnc) | ❌ No (persist) |
 
 **When to rebuild:** Dockerfile changes, system packages, service configs.
 
@@ -208,8 +207,6 @@ coding-template/
 ├── tools/              # bash, editor, computer
 ├── grading/            # @problem decorator, graders
 ├── tasks/              # Problem definitions
-├── services/           # dinit service loader
-├── dinit.d/            # Service configs (postgres, redis, vnc)
 ├── local_test.py       # Dev testing
 └── Dockerfile.hud      # Container config
 ```
