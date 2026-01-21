@@ -347,7 +347,7 @@ class GradingRunner:
             logger.info(f"Drop DB exit: {drop_res.returncode}\n{drop_res.stdout}\n{drop_res.stderr}")
             create_res = subprocess.run(["bash", "-lc", create_cmd], cwd=self.grade_working_dir, capture_output=True, text=True)
             logger.info(f"Create DB exit: {create_res.returncode}\n{create_res.stdout}\n{create_res.stderr}")
-            migrate_res = subprocess.run(["bash", "-lc", migrate_cmd], cwd=self.grade_working_dir, capture_output=True, text=True, env={**os.environ, "HOME": "/home/ubuntu"})
+            migrate_res = subprocess.run(["bash", "-lc", migrate_cmd], cwd=self.grade_working_dir, capture_output=True, text=True)
             logger.info(f"Migrate exit: {migrate_res.returncode}\n{migrate_res.stdout}\n{migrate_res.stderr}")
         else:
             logger.info("Skipping database setup (no migration command configured)")
