@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 FROM ubuntu:24.04 AS setup
 
-# Update and install core dependencies (including working Chromium browser)
+# Update and install core dependencies
 RUN apt-get update -y \
   && apt-get install -y --no-install-recommends \
   vim \
@@ -11,45 +11,22 @@ RUN apt-get update -y \
   wget \
   sudo \
   bash \
-  net-tools \
-  novnc \
-  x11vnc \
-  xvfb \
   python3 \
   python3-pip \
   python3-dev \
-  python3-tk \
   python3-wheel \
   python3-venv \
-  xfce4 \
-  locales \
   libpq5 \
   sqlite3 \
   dbus-x11 \
-  xfce4-terminal \
   xfonts-base \
   xdotool \
   psmisc \
-  scrot \
-  imagemagick \
-  pm-utils \
   build-essential \
   python-is-python3 \
-  unzip \
   git \
   xauth \
-  ffmpeg \
-  nginx \
-  apache2 \
-  libapache2-mod-wsgi-py3 \
   gnupg \
-  gpg \ 
-  jq \
-  build-essential \
-  python3 \
-  make \
-  gcc \
-  g++ \
   libcairo2-dev \
   libjpeg-turbo8-dev \
   libpng-dev \
@@ -72,30 +49,10 @@ RUN apt-get update -y \
   libhyphen0 \
   libmanette-0.2-0 \
   libgles2 \
-  redis-server \
-  postgresql-common \
-  postgresql-16-pgvector \
-  mkcert \
   ruby \
   rubygems-integration
 
 RUN update-ca-certificates
-
-# Install Chromium browser from Debian repos (has ARM64 support)
-RUN mkdir -p /etc/apt/keyrings && \
-    wget -q -O /etc/apt/keyrings/debian-archive-key.asc https://ftp-master.debian.org/keys/archive-key-12.asc && \
-    echo 'deb [signed-by=/etc/apt/keyrings/debian-archive-key.asc] http://deb.debian.org/debian bookworm main' > /etc/apt/sources.list.d/debian.list && \
-    apt-get update && \
-    apt-get install -y chromium chromium-driver && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-# disable sandboxing for chromium (won't run in docker)
-RUN echo "export CHROMIUM_FLAGS=--no-sandbox" >> /etc/chromium.d/default-flags
-# disable dns over https (so we can mock websites)
-RUN mkdir -p /etc/chromium/policies/managed
-# note that this is edited during startup to append insecure sites as secure
-RUN echo '{ "DnsOverHttpsMode": "off", "DefaultPopupsSetting": 1, "SafeBrowsingProtectionLevel": 1 }' > /etc/chromium/policies/managed/policy.json
 
 # install fakes3
 RUN gem install fakes3 -v 0.2.5
@@ -251,25 +208,9 @@ RUN python3 /build_scripts/alter_env_files.py
 
 # === End of PROJECT SETUP section ===
 
-# Set environment variables
-ENV HOME=/home/ubuntu \
-    DEBIAN_FRONTEND=noninteractive \
-    DISPLAY=:1.0 \
-    DISPLAY_WIDTH=1280 \
-    DISPLAY_HEIGHT=800
-
-EXPOSE 6080
-
 # supress AT-SPI errors
 ENV NO_AT_BRIDGE=1
 USER root
-
-# allow any user to run mkcert by inserting a script that calls sudo mkcert
-RUN mv /usr/bin/mkcert /usr/bin/mkcert2 && \
-    echo '#!/bin/bash\nexec sudo mkcert2 "$@"' > /usr/bin/mkcert && \
-    chmod +x /usr/bin/mkcert
-# add a line to sudoers file so that any user can run mkcert2 with sudo
-RUN echo "ubuntu ALL=(ALL) NOPASSWD: /usr/bin/mkcert2" >> /etc/sudoers
 
 
 # ================================ HUD Environment Setup ================================================
@@ -297,19 +238,7 @@ RUN uv venv && . .venv/bin/activate && uv sync --no-install-project --extra dev 
 ENV PYTHONPATH=/mcp_server/.venv/lib/python3.12/site-packages:/mcp_server
 ENV PATH=/mcp_server/.venv/bin:$PATH
 
-# VNC/Computer tool settings
-ENV WIDTH=1280
-ENV HEIGHT=800
-ENV DISPLAY_NUM=1
-RUN mkdir -p /home/ubuntu/screenshots
-RUN chmod 777 /home/ubuntu/screenshots
-ENV SCREENSHOT_DIR=/home/ubuntu/screenshots
-RUN mkdir -p /home/ubuntu/Downloads
-RUN chmod 777 /home/ubuntu/Downloads
-
 RUN chmod 777 /root
-
-EXPOSE 6080 3000
 
 ARG HINTS="none"
 ENV HINTS=$HINTS

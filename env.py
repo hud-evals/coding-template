@@ -17,7 +17,7 @@ from hud import Environment
 
 from grading import EnvironmentState
 from scenarios import get_problem_spec, register_scenarios
-from tools import BashTool, ComputerTool, EditTool, ToolError
+from tools import BashTool, EditTool, ToolError
 
 logger = logging.getLogger(__name__)
 
@@ -27,23 +27,16 @@ env = Environment("coding")
 # Initialize tools
 _bash_tool: BashTool | None = None
 _edit_tool: EditTool | None = None
-_computer_tool: ComputerTool | None = None
 
 
 @env.initialize
 async def initialize() -> None:
     """Initialize the coding environment tools."""
-    global _bash_tool, _edit_tool, _computer_tool
+    global _bash_tool, _edit_tool
 
     logger.info("Initializing coding environment")
     _bash_tool = BashTool()
     _edit_tool = EditTool()
-    try:
-        _computer_tool = ComputerTool()
-    except AssertionError:
-        # ComputerTool requires WIDTH/HEIGHT env vars - skip if not available
-        logger.warning("ComputerTool not available (WIDTH/HEIGHT not set)")
-        _computer_tool = None
 
     logger.info("Coding environment initialized")
 
@@ -51,14 +44,13 @@ async def initialize() -> None:
 @env.shutdown
 async def shutdown() -> None:
     """Clean up the coding environment."""
-    global _bash_tool, _edit_tool, _computer_tool
+    global _bash_tool, _edit_tool
 
     if _bash_tool and _bash_tool._session:
         _bash_tool._session.stop()
 
     _bash_tool = None
     _edit_tool = None
-    _computer_tool = None
     logger.info("Coding environment shut down")
 
 
@@ -137,67 +129,6 @@ async def editor(
         return result.output or ""
     except ToolError as e:
         return f"Error: {e.message}"
-
-
-@env.tool()
-async def computer(
-    action: str,
-    text: str | None = None,
-    coordinate: list[int] | None = None,
-    start_coordinate: list[int] | None = None,
-    scroll_direction: str | None = None,
-    scroll_amount: int | None = None,
-    duration: float | None = None,
-) -> list[dict[str, Any]]:
-    """Interact with the desktop via mouse and keyboard.
-
-    Args:
-        action: One of 'key', 'type', 'mouse_move', 'left_click', 'right_click',
-               'double_click', 'triple_click', 'middle_click', 'scroll',
-               'screenshot', 'cursor_position', 'left_click_drag', etc.
-        text: Text to type or key to press
-        coordinate: [x, y] coordinates for mouse actions
-        start_coordinate: [x, y] start position for drag actions
-        scroll_direction: 'up', 'down', 'left', or 'right' for scroll
-        scroll_amount: Number of scroll units
-        duration: Duration for 'hold_key' or 'wait' actions
-
-    Returns:
-        List of content blocks (text and/or images)
-    """
-    if _computer_tool is None:
-        return [{"type": "text", "text": "Error: Computer tool not available"}]
-
-    try:
-        # Convert coordinate lists to tuples if provided
-        coord_tuple = tuple(coordinate) if coordinate else None
-        start_coord_tuple = tuple(start_coordinate) if start_coordinate else None
-
-        result = await _computer_tool(
-            action=action,  # type: ignore
-            text=text,
-            coordinate=coord_tuple,  # type: ignore
-            start_coordinate=start_coord_tuple,  # type: ignore
-            scroll_direction=scroll_direction,  # type: ignore
-            scroll_amount=scroll_amount,
-            duration=duration,
-        )
-
-        # Convert MCP content blocks to dicts
-        output = []
-        for block in result:
-            if hasattr(block, "text"):
-                output.append({"type": "text", "text": block.text})
-            elif hasattr(block, "data"):
-                output.append({
-                    "type": "image",
-                    "data": block.data,
-                    "mimeType": getattr(block, "mimeType", "image/png"),
-                })
-        return output
-
-    except Exception as e:
-        return [{"type": "text", "text": f"Error: {e}"}]
 
 
 # ============================================================================

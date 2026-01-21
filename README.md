@@ -57,10 +57,6 @@ async def bash(command: str) -> str:
 @env.tool()
 async def editor(command: str, path: str, ...) -> str:
     """View, create, and edit files."""
-
-@env.tool()
-async def computer(action: str, ...) -> list[dict]:
-    """VNC desktop interaction (mouse, keyboard, screenshots)."""
 ```
 
 ### Scenarios (in `scenarios.py`)
@@ -204,7 +200,7 @@ When you save a watched file, the MCP server restarts with fresh imports:
 coding-template/
 ├── env.py              # Tools + scenario registration
 ├── scenarios.py        # Shared helpers + scenarios
-├── tools/              # bash, editor, computer
+├── tools/              # bash, editor
 ├── grading/            # @problem decorator, graders
 ├── tasks/              # Problem definitions
 ├── local_test.py       # Dev testing
