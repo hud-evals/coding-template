@@ -1,34 +1,55 @@
 # Coding Environment Template
 
-A full coding environment for agent evaluations. Provides bash, file editing, and VNC desktop. Uses `dinit` for services (Postgres, Redis, VNC).
+A coding environment for agent evaluations. Provides bash and file editing tools.
 
 > **⚠️ This is a template.** Before building, customize `Dockerfile.hud` for your project.
 
-## Template Setup
+## Quick Start (Sample Repo)
 
-Edit `Dockerfile.hud` to configure your project:
+To test the template with the sample repository:
 
-```dockerfile
-# 1. Clone your project (uncomment and edit)
-RUN git clone https://github.com/your-org/your-repo /home/ubuntu/myproject
-
-# 2. Set working directory
-WORKDIR /home/ubuntu/myproject
-
-# 3. Configure branches for grading
-ARG TEST_BRANCH=test          # Agent works here
-ARG GOLDEN_BRANCH=solution    # Reference solution
-ARG BASELINE_BRANCH=main      # Starting state
+```bash
+hud build . --build-arg REPO_URL=https://github.com/hud-evals/coding-template-sample
+hud dev --port 8765
+python local_test.py
 ```
 
-The **3-branch pattern**:
+## Template Setup
+
+The Dockerfile uses two build arguments:
+
+| Argument | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `REPO_URL` | **Yes** | *(none)* | Git repository URL to clone |
+| `FOLDER_NAME` | No | `project` | Folder name for the cloned repo |
+
+```dockerfile
+# Required: Pass REPO_URL as a build argument
+ARG REPO_URL
+ARG FOLDER_NAME="project"
+
+# The repo is cloned to /home/ubuntu/${FOLDER_NAME}
+WORKDIR /home/ubuntu/${FOLDER_NAME}
+```
+
+For private repos, set `CODING_GITHUB_TOKEN` locally before building:
+
+```bash
+export CODING_GITHUB_TOKEN=github_pat_XXX
+hud build . --build-arg REPO_URL=https://github.com/your-org/your-repo \
+            --secret id=CODING_GITHUB_TOKEN,env=CODING_GITHUB_TOKEN
+```
+
+Every task in `tasks/*.py` follows the **3-branch pattern**, where each branch exists in the source repo cloned in the Dockerfile:
 | Branch | Purpose |
 |--------|---------|
-| `baseline` | Starting state the agent sees |
-| `test` | Where agent makes changes |
-| `golden` | Correct solution (for grading) |
+| `baseline` | Starting state the agent sees, where the agent makes changes |
+| `test` | Contains tests that grade the agent's solution |
+| `golden` | Correct solution for validation and/or training |
 
-If you're **not using git-based problems**, comment out the git section in the Dockerfile (lines ~128-154).
+Git patches will automatically be generated for every branch defined in each task.
+
+If you're **not using git-based problems**, comment out the git clone section in `Dockerfile.hud` (lines ~63-87).
 
 ## 1. Deploy to Platform
 
@@ -55,10 +76,6 @@ async def bash(command: str) -> str:
 @env.tool()
 async def editor(command: str, path: str, ...) -> str:
     """View, create, and edit files."""
-
-@env.tool()
-async def computer(action: str, ...) -> list[dict]:
-    """VNC desktop interaction (mouse, keyboard, screenshots)."""
 ```
 
 ### Scenarios (in `scenarios.py`)
@@ -162,11 +179,15 @@ async with hud.eval(tasks, variants=variants, group=2) as ctx:
 
 ## Local Development
 
-This environment requires Docker (for VNC, Postgres, etc.). Use `hud dev` with hot-reload:
+This environment requires Docker. Use `hud dev` with hot-reload:
 
 ```bash
 # 1. Build the Docker image (first time only)
-hud build
+hud build . --build-arg REPO_URL=https://github.com/your-org/your-repo
+
+# For private repos, also pass the secret:
+hud build . --build-arg REPO_URL=https://github.com/your-org/your-repo \
+            --secret id=CODING_GITHUB_TOKEN,env=CODING_GITHUB_TOKEN
 
 # 2. Start with hot-reload on tasks/grading
 hud dev -w tasks -w grading --port 8765
@@ -190,7 +211,6 @@ When you save a watched file, the MCP server restarts with fresh imports:
 | `tasks/*.py` | ✅ Yes |
 | `grading/*.py` | ✅ Yes |
 | `tools/*.py` | ✅ Yes (if watched) |
-| dinit services (postgres, redis, vnc) | ❌ No (persist) |
 
 **When to rebuild:** Dockerfile changes, system packages, service configs.
 
@@ -200,11 +220,9 @@ When you save a watched file, the MCP server restarts with fresh imports:
 coding-template/
 ├── env.py              # Tools + scenario registration
 ├── scenarios.py        # Shared helpers + scenarios
-├── tools/              # bash, editor, computer
+├── tools/              # bash, editor
 ├── grading/            # @problem decorator, graders
 ├── tasks/              # Problem definitions
-├── services/           # dinit service loader
-├── dinit.d/            # Service configs (postgres, redis, vnc)
 ├── local_test.py       # Dev testing
 └── Dockerfile.hud      # Container config
 ```
@@ -231,25 +249,25 @@ In `Dockerfile.hud`, uncomment and configure the section for your language:
 ```dockerfile
 RUN python3 -m pip install --upgrade pip
 RUN pip install poetry  # or: pipenv, pip-tools
-RUN cd /home/ubuntu/myproject && pip install -r requirements.txt
+RUN cd /home/ubuntu/${FOLDER_NAME} && pip install -r requirements.txt
 ```
 
 **Java/Maven:**
 ```dockerfile
 RUN apt-get install -y openjdk-17-jdk maven
-RUN cd /home/ubuntu/myproject && mvn dependency:resolve
+RUN cd /home/ubuntu/${FOLDER_NAME} && mvn dependency:resolve
 ```
 
 **Go:**
 ```dockerfile
 RUN wget https://go.dev/dl/go1.21.0.linux-amd64.tar.gz && tar -C /usr/local -xzf go*.tar.gz
-RUN cd /home/ubuntu/myproject && go mod download
+RUN cd /home/ubuntu/${FOLDER_NAME} && go mod download
 ```
 
 **Rust:**
 ```dockerfile
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-RUN cd /home/ubuntu/myproject && cargo fetch
+RUN cd /home/ubuntu/${FOLDER_NAME} && cargo fetch
 ```
 
 ### 3. Configure Test Framework

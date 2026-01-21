@@ -18,63 +18,67 @@ logger = logging.getLogger(__name__)
 # ==============================================================================
 
 
-@problem(
-    id="example_medium_task",
-    description="""
-    Example Task: Implement [feature] across [multiple components]
-    
-    [Detailed description of the task]:
-    - Current behavior: [what happens now across components]
-    - Expected behavior: [what should happen]
-    
-    Example: "Implement automatic subscription management when groups are added
-    to documents. Update the processor to handle group events, create a new task
-    for individual subscriptions, and ensure proper batch processing."
-    """,
-    hints=[
-#         HintSpec(
-#             hint_type="legit/leaky",
-#             text="Consider how to process large groups efficiently",
-#             why_legitmate="Prompts thinking about performance without revealing solution",
-#         ),
-#        ... (add more hints as needed)
-    ],
-    difficulty="medium",
-    task_type="coding",
-    review_level="no-review",
-    base="example_medium_task_baseline",
-    test="example_medium_task_test",
-    golden="example_medium_task_golden",
-)
-def example_medium_task(state: EnvironmentState) -> Grade:
-    """
-    Task: [Brief one-line description]
-    
-    :param state (EnvironmentState): The current state of the environment
-                                    after the agent has worked on the task
-
-    Returns:
-        Grade: A grade object containing the score (0.0 to 1.0) based on whether
-               the feature is properly implemented.
-
-    Grading:
-        - Full score (1.0): If feature implemented correctly and tests pass
-        - Zero score (0.0): If implementation is incorrect or tests fail
-    """
-    return Grade.from_subscores(
-        [
-            AgentPatchGrader.grade(
-                state=state,
-                weight=1.0,
-                base="example_medium_task_baseline",
-                test="example_medium_task_test",
-                golden="example_medium_task_golden",
-                test_files=[
-                    "path/to/test/file",
-                ],
-            )
-        ]
-    )
+# ==============================================================================
+# UNCOMMENT AND CUSTOMIZE THIS EXAMPLE WHEN YOU HAVE A REPOSITORY SET UP
+# ==============================================================================
+#
+# @problem(
+#     id="example_medium_task",
+#     description="""
+#     Example Task: Implement [feature] across [multiple components]
+#
+#     [Detailed description of the task]:
+#     - Current behavior: [what happens now across components]
+#     - Expected behavior: [what should happen]
+#
+#     Example: "Implement automatic subscription management when groups are added
+#     to documents. Update the processor to handle group events, create a new task
+#     for individual subscriptions, and ensure proper batch processing."
+#     """,
+#     hints=[
+#         # HintSpec(
+#         #     hint_type="legit/leaky",
+#         #     text="Consider how to process large groups efficiently",
+#         #     why_legitmate="Prompts thinking about performance without revealing solution",
+#         # ),
+#         # ... (add more hints as needed)
+#     ],
+#     difficulty="medium",
+#     task_type="coding",
+#     review_level="no-review",
+#     base="example_medium_task_baseline",
+#     test="example_medium_task_test",
+#     golden="example_medium_task_golden",
+# )
+# def example_medium_task(state: EnvironmentState) -> Grade:
+#     """
+#     Task: [Brief one-line description]
+#
+#     :param state (EnvironmentState): The current state of the environment
+#                                     after the agent has worked on the task
+#
+#     Returns:
+#         Grade: A grade object containing the score (0.0 to 1.0) based on whether
+#                the feature is properly implemented.
+#
+#     Grading:
+#         - Full score (1.0): If feature implemented correctly and tests pass
+#         - Zero score (0.0): If implementation is incorrect or tests fail
+#     """
+#     return Grade.from_subscores(
+#         [
+#             AgentPatchGrader.grade(
+#                 state=state,
+#                 weight=1.0,
+#                 base="example_medium_task_baseline",
+#                 test="example_medium_task_test",
+#                 golden="example_medium_task_golden",
+#                 test_files=[
+#                     "path/to/test/file",
+#                 ],
+#             )
+#         ]
+#     )
 
 
 # ==============================================================================

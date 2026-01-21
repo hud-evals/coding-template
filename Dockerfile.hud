@@ -1,104 +1,30 @@
 # syntax=docker/dockerfile:1
 FROM ubuntu:24.04 AS setup
 
-# Update and install core dependencies (including working Chromium browser)
+# Update and install core dependencies
 RUN apt-get update -y \
   && apt-get install -y --no-install-recommends \
-  vim \
-  openssl \
+  bash \
+  build-essential \
   ca-certificates \
   curl \
-  wget \
-  sudo \
-  bash \
-  net-tools \
-  novnc \
-  x11vnc \
-  xvfb \
-  python3 \
-  python3-pip \
-  python3-dev \
-  python3-tk \
-  python3-wheel \
-  python3-venv \
-  xfce4 \
-  locales \
-  libpq5 \
-  sqlite3 \
-  dbus-x11 \
-  xfce4-terminal \
-  xfonts-base \
-  xdotool \
-  psmisc \
-  scrot \
-  imagemagick \
-  pm-utils \
-  build-essential \
-  python-is-python3 \
-  unzip \
   git \
-  xauth \
-  ffmpeg \
-  nginx \
-  apache2 \
-  libapache2-mod-wsgi-py3 \
   gnupg \
-  gpg \ 
-  jq \
-  build-essential \
+  libpq5 \
+  openssl \
+  python-is-python3 \
   python3 \
-  make \
-  gcc \
-  g++ \
-  libcairo2-dev \
-  libjpeg-turbo8-dev \
-  libpng-dev \
-  libwebp-dev \
-  libtiff-dev \
-  libgif-dev \
-  libvips-dev \
-  libgstreamer1.0-0 \
-  libgtk-4-1 \
-  libgraphene-1.0-0 \
-  libwoff1 \
-  libevent-2.1-7 \
-  libgstreamer-plugins-base1.0-0 \
-  libgstreamer-plugins-good1.0-0 \
-  libgstreamer-gl1.0-0 \
-  libgstreamer-plugins-bad1.0-0 \
-  libavif16 \
-  libenchant-2-2 \
-  libsecret-1-0 \
-  libhyphen0 \
-  libmanette-0.2-0 \
-  libgles2 \
-  redis-server \
-  postgresql-common \
-  postgresql-16-pgvector \
-  mkcert \
-  ruby \
-  rubygems-integration
+  python3-dev \
+  python3-pip \
+  python3-venv \
+  python3-wheel \
+  sqlite3 \
+  sudo \
+  vim \
+  wget \
+  && rm -rf /var/lib/apt/lists/*
 
 RUN update-ca-certificates
-
-# Install Chromium browser from Debian repos (has ARM64 support)
-RUN mkdir -p /etc/apt/keyrings && \
-    wget -q -O /etc/apt/keyrings/debian-archive-key.asc https://ftp-master.debian.org/keys/archive-key-12.asc && \
-    echo 'deb [signed-by=/etc/apt/keyrings/debian-archive-key.asc] http://deb.debian.org/debian bookworm main' > /etc/apt/sources.list.d/debian.list && \
-    apt-get update && \
-    apt-get install -y chromium chromium-driver && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-# disable sandboxing for chromium (won't run in docker)
-RUN echo "export CHROMIUM_FLAGS=--no-sandbox" >> /etc/chromium.d/default-flags
-# disable dns over https (so we can mock websites)
-RUN mkdir -p /etc/chromium/policies/managed
-# note that this is edited during startup to append insecure sites as secure
-RUN echo '{ "DnsOverHttpsMode": "off", "DefaultPopupsSetting": 1, "SafeBrowsingProtectionLevel": 1 }' > /etc/chromium/policies/managed/policy.json
-
-# install fakes3
-RUN gem install fakes3 -v 0.2.5
 
 WORKDIR /
 
@@ -121,40 +47,49 @@ RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | b
 # =================================================================
 
 # 0) Clone or copy your project repository
-# Replace with your repo URL and credentials if needed
-# ENV GITHUB_TOKEN_BASE64=[YOUR_GITHUB_TOKEN_BASE64]
-# ENV GITHUB_USERNAME=[YOUR_GITHUB_USERNAME]
-# Example for private repo:
-# RUN cd /home/ubuntu && \
-#     GITHUB_TOKEN=$(echo "$GITHUB_TOKEN_BASE64" | base64 -d); \
-#     git clone https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com/your-org/your-repo /home/ubuntu/[PROJECT_NAME]
-# Example for public repo:
-# RUN git clone https://github.com/your-org/your-repo /home/ubuntu/[PROJECT_NAME]
+# Pass REPO_URL as a build arg:
+#   hud build . --build-arg REPO_URL=https://github.com/your-org/your-repo
+# For private repos, also pass the secret (requires hud-python >= 0.5.13):
+#   hud build . --build-arg REPO_URL=https://github.com/your-org/your-repo \
+#               --secret id=CODING_GITHUB_TOKEN,env=CODING_GITHUB_TOKEN
+ARG REPO_URL
+ARG FOLDER_NAME="project"
 
-WORKDIR /home/ubuntu/[PROJECT_NAME]
+# Expose REPO_URL as an environment variable for conditionally enabling/disabling
+# code for compatibility with the sample repo. See comments marked with [CUSTOMIZE]
+#Remove if not needed.
+ENV REPO_URL=${REPO_URL}
+ENV FOLDER_NAME=${FOLDER_NAME}
 
-# Checkout branches for testing (baseline, test, golden)
-ARG TEST_BRANCH=[test_branch_name]
-ARG GOLDEN_BRANCH=[golden_branch_name]
-ARG BASELINE_BRANCH=[baseline_branch_name]
-RUN git checkout $BASELINE_BRANCH && \
-    git checkout $TEST_BRANCH && \
-    git checkout $GOLDEN_BRANCH && \
-    git checkout $BASELINE_BRANCH
+# Clone and fetch all branches (needed for runtime checkout of baseline/test/golden)
+# If CODING_GITHUB_TOKEN secret is provided, use it for private repos; otherwise clone public repo
+RUN --mount=type=secret,id=CODING_GITHUB_TOKEN,uid=1000 \
+    if [ -f /run/secrets/CODING_GITHUB_TOKEN ]; then \
+        CODING_GITHUB_TOKEN=$(cat /run/secrets/CODING_GITHUB_TOKEN) && \
+        git clone https://${CODING_GITHUB_TOKEN}@${REPO_URL#https://} /home/ubuntu/${FOLDER_NAME}; \
+    else \
+        git clone ${REPO_URL} /home/ubuntu/${FOLDER_NAME}; \
+    fi && \
+    cd /home/ubuntu/${FOLDER_NAME} && \
+    git fetch --all
 
-# Generate patches for grading
+WORKDIR /home/ubuntu/${FOLDER_NAME}
+
+# Protect .git from agent access (agent runs as ubuntu/uid 1000, MCP server runs as root)
+# This allows setup_problem to:
+# 1. Generate patches at runtime (base→test, base→golden)
+# 2. Checkout the baseline branch
+# The agent cannot access git history or checkout solution branches
 USER root
-RUN mkdir -p /home/root && \
-    sudo -u ubuntu git diff $BASELINE_BRANCH $TEST_BRANCH > /home/root/test.patch && \
-    sudo -u ubuntu git diff $BASELINE_BRANCH $GOLDEN_BRANCH > /home/root/golden.patch
+RUN mkdir -p /home/root/patches && \
+    chown -R root:root /home/ubuntu/${FOLDER_NAME}/.git && \
+    chmod -R 700 /home/ubuntu/${FOLDER_NAME}/.git && \
+    git config --global --add safe.directory /home/ubuntu/${FOLDER_NAME}
 USER ubuntu
-
-# Overwrite git history to avoid leaking info
-RUN rm -rf .git && git init && git add . && git commit -m "Initial commit"
 
 # 1) Install language runtime/compiler
 # === FOR NODE.JS/TYPESCRIPT (example) ===
-# RUN NODE_VERSION_SPEC=$(jq -r '.engines.node // ""' /home/ubuntu/[PROJECT_NAME]/package.json) && \
+# RUN NODE_VERSION_SPEC=$(jq -r '.engines.node // ""' /home/ubuntu/${FOLDER_NAME}/package.json) && \
 #     NODE_VERSION=$(printf "%s" "$NODE_VERSION_SPEC" | grep -oE '<= *[0-9]+' | tail -n1 | sed -E 's/^[^0-9]*//') && \
 #     if [ -z "$NODE_VERSION" ]; then NODE_VERSION=$(printf "%s" "$NODE_VERSION_SPEC" | grep -oE '[0-9]+' | tail -n1); fi && \
 #     bash -c "source ~/.nvm/nvm.sh --no-use && nvm install $NODE_VERSION && nvm use $NODE_VERSION && nvm alias default $NODE_VERSION" && \
@@ -193,7 +128,7 @@ RUN rm -rf .git && git init && git add . && git commit -m "Initial commit"
 # Already installed with rustup
 
 # 3) Install dependencies
-# RUN cd /home/ubuntu/[PROJECT_NAME] && [INSTALL_DEPENDENCIES_COMMAND]
+# RUN cd /home/ubuntu/${FOLDER_NAME} && [INSTALL_DEPENDENCIES_COMMAND]
 # Examples:
 #   Node.js: yarn install
 #   Python: pip install -r requirements.txt  or  poetry install
@@ -206,7 +141,7 @@ RUN rm -rf .git && git init && git add . && git commit -m "Initial commit"
 # Configure your test framework to output JUnit XML.
 #
 # === FOR JEST (Node.js) ===
-# RUN cd /home/ubuntu/[PROJECT_NAME] && \
+# RUN cd /home/ubuntu/${FOLDER_NAME} && \
 #     yarn add jest-junit && \
 #     jq '.reporters = ["default", ["jest-junit", {"outputDirectory": "./", "outputName": "jest_results.xml"}]]' .jestconfig.json > .jestconfig.tmp && \
 #     mv .jestconfig.tmp .jestconfig.json
@@ -229,7 +164,7 @@ RUN rm -rf .git && git init && git add . && git commit -m "Initial commit"
 # Use gtest_junit_output: --gtest_output=xml:test_results.xml
 
 # 5) Build the project
-# RUN cd /home/ubuntu/[PROJECT_NAME] && [BUILD_COMMAND]
+# RUN cd /home/ubuntu/${FOLDER_NAME} && [BUILD_COMMAND]
 # Examples:
 #   Node.js: yarn build  or  npm run build
 #   Python: (often no build step)  or  python setup.py build
@@ -244,37 +179,8 @@ RUN python3 /build_scripts/alter_env_files.py
 
 # === End of PROJECT SETUP section ===
 
-# Set environment variables
-ENV HOME=/home/ubuntu \
-    DEBIAN_FRONTEND=noninteractive \
-    DISPLAY=:1.0 \
-    DISPLAY_WIDTH=1280 \
-    DISPLAY_HEIGHT=800
-
-EXPOSE 6080
-
-# supress AT-SPI errors
-ENV NO_AT_BRIDGE=1
 USER root
 
-# allow any user to run mkcert by inserting a script that calls sudo mkcert
-RUN mv /usr/bin/mkcert /usr/bin/mkcert2 && \
-    echo '#!/bin/bash\nexec sudo mkcert2 "$@"' > /usr/bin/mkcert && \
-    chmod +x /usr/bin/mkcert
-# add a line to sudoers file so that any user can run mkcert2 with sudo
-RUN echo "ubuntu ALL=(ALL) NOPASSWD: /usr/bin/mkcert2" >> /etc/sudoers
-
-# Setup and start dinit
-COPY dinit.d/ /etc/dinit.d/
-RUN mkdir -p /var/log/dinit && chmod 755 /var/log/dinit
-
-# Copy postgres init scripts (SQL and shell)
-COPY docker-entrypoint-initdb.d/ /docker-entrypoint-initdb.d/
-
-# Postgres config:
-ENV POSTGRES_USER=ubuntu
-ENV POSTGRES_PASSWORD=ubuntu
-ENV POSTGRES_DB=ubuntu
 
 # ================================ HUD Environment Setup ================================================
 FROM setup AS runtime
@@ -291,36 +197,24 @@ COPY ./scenarios.py /mcp_server/scenarios.py
 COPY ./tools /mcp_server/tools
 COPY ./grading /mcp_server/grading
 COPY ./tasks /mcp_server/tasks
-COPY ./services /mcp_server/services
 COPY ./pyproject.toml /mcp_server/pyproject.toml
 COPY ./README.md /mcp_server/README.md
 
 WORKDIR /mcp_server
 
 ENV RUST_LOG=warn
-RUN uv venv && . .venv/bin/activate && uv sync && uv pip install -e .
+RUN uv venv && . .venv/bin/activate && uv sync --no-install-project --extra dev && uv pip install -e .
 ENV PYTHONPATH=/mcp_server/.venv/lib/python3.12/site-packages:/mcp_server
 ENV PATH=/mcp_server/.venv/bin:$PATH
 
-# VNC/Computer tool settings
-ENV WIDTH=1280
-ENV HEIGHT=800
-ENV DISPLAY_NUM=1
-RUN mkdir -p /home/ubuntu/screenshots
-RUN chmod 777 /home/ubuntu/screenshots
-ENV SCREENSHOT_DIR=/home/ubuntu/screenshots
-RUN mkdir -p /home/ubuntu/Downloads
-RUN chmod 777 /home/ubuntu/Downloads
-
 RUN chmod 777 /root
-
-EXPOSE 6080 3000
 
 ARG HINTS="none"
 ENV HINTS=$HINTS
 
-ARG PROBLEM_ID
-ENV PROBLEM_ID=$PROBLEM_ID
+# PROBLEM_ID is set at runtime via scenario args, not at build time
+# It selects which patches to use from /home/root/patches/{problem_id}/
+ENV PROBLEM_ID=""
 
 # Run the HUD MCP server
 CMD ["hud", "dev", "env:env", "--stdio"]

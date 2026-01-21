@@ -6,7 +6,7 @@ Development workflow:
 3. Edit tasks/*.py or grading/*.py - container auto-reloads
 4. Re-run this script to test changes
 
-Scenarios call internal tools (_start_services, _grade_solution) on the container.
+Scenarios call internal tools (_grade_solution) on the container.
 Task definitions and grading logic run inside the container (hot-reloaded).
 """
 import asyncio
@@ -52,7 +52,7 @@ async def test_tools_standalone():
         print(f"Internal tools: {[t.name for t in tools if t.name.startswith('_')]}")
 
         # Test bash
-        result = await env.call_tool("bash", {"command": "echo 'Hello from coding env'"})
+        result = await env.call_tool("bash", command="echo 'Hello from coding env'")
         print(f"Bash result: {result}")
 
 
@@ -60,54 +60,57 @@ async def test_solve_task_manual():
     """Test solve-task scenario with manual OpenAI completions loop."""
     print("\n=== Test 2: Solve Task (Manual Agent Loop) ===")
 
-    task = env("solve-task", problem_id="template_basic_task")
+    async with env:
+        task = env("solve-task", problem_id="template_basic_task")
 
-    async with hud.eval(task, trace=True) as ctx:
-        messages = [{"role": "user", "content": ctx.prompt}]
+        async with hud.eval(task, trace=True) as ctx:
+            messages = [{"role": "user", "content": ctx.prompt}]
 
-        for step in range(10):
-            response = await client.chat.completions.create(
-                model="gpt-4o",  # https://hud.ai/models
-                messages=messages,
-                tools=ctx.as_openai_chat_tools(),
-            )
-            msg = response.choices[0].message
+            for _ in range(10):
+                response = await client.chat.completions.create(
+                    model="gpt-4o",  # https://hud.ai/models
+                    messages=messages,
+                    tools=ctx.as_openai_chat_tools(),
+                )
+                msg = response.choices[0].message
 
-            if not msg.tool_calls:
-                print(f"Agent finished with: {msg.content}")
-                break
+                if not msg.tool_calls:
+                    print(f"Agent finished with: {msg.content}")
+                    break
 
-            messages.append(msg)
-            for tc in msg.tool_calls:
-                result = await ctx.call_tool(tc)
-                messages.append(result)
+                messages.append(msg)
+                for tc in msg.tool_calls:
+                    result = await ctx.call_tool(tc)
+                    messages.append(result)
 
 
 async def test_solve_task_agent():
     """Test solve-task scenario with OpenAIChatAgent."""
     print("\n=== Test 3: Solve Task (OpenAIChatAgent) ===")
 
-    task = env("solve-task", problem_id="template_basic_task")
+    async with env:
+        task = env("solve-task", problem_id="template_basic_task")
 
-    async with hud.eval(task, trace=True) as ctx:
-        agent = OpenAIChatAgent.create(model="gpt-4o")  # https://hud.ai/models
-        await agent.run(ctx, max_steps=20)
+        async with hud.eval(task, trace=True) as ctx:
+            agent = OpenAIChatAgent.create(model="gpt-4o")  # https://hud.ai/models
+            await agent.run(ctx, max_steps=20)
 
 
 async def test_distribution():
     """Test multiple tasks with variants and groups for A/B testing."""
     print("\n=== Test 4: Distribution (Variants + Groups) ===")
 
-    tasks = [
-        env("solve-task", problem_id="template_basic_task"),
-        env("solve-task", problem_id="template_medium_task"),
-    ]
-    variants = {"model": ["gpt-4o-mini", "gpt-4o"]}
-    group = 2
+    async with env:
+        tasks = [
+            env("solve-task", problem_id="template_basic_task"),
+            env("solve-task", problem_id="template_medium_task"),
+        ]
+        variants = {"model": ["gpt-4o-mini", "gpt-4o"]}
+        group = 2
 
-    async with hud.eval(tasks, variants=variants, group=group, trace=True) as ctx:
-        agent = OpenAIChatAgent.create(model=ctx.variants["model"])
-        await agent.run(ctx, max_steps=20)
+        async with hud.eval(tasks, variants=variants, group=group, trace=True) as ctx:
+            agent = OpenAIChatAgent.create(model=ctx.variants["model"])
+            await agent.run(ctx, max_steps=20)
 
 
 async def main():
@@ -121,7 +124,7 @@ async def main():
 
     await test_tools_standalone()
 
-    # Uncomment to run full scenarios (requires container with services):
+    # Uncomment to run full scenarios:
     # await test_solve_task_manual()
     # await test_solve_task_agent()
     # await test_distribution()

@@ -1,7 +1,7 @@
 import importlib
 import logging
 import pkgutil
-import xml.etree.ElementTree as ET
+from xml.etree import ElementTree as ET
 
 logger = logging.getLogger(__name__)
 

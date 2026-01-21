@@ -2,17 +2,14 @@
 
 This file contains:
 - Shared helper functions (used by scenarios and CLI)
-- Scenario definitions (use call_tool, work in both container and dev mode)
-
-Scenarios use env.call_tool() which routes to:
-- Local tool functions when running in the container
-- HTTP calls when connected to a dev server
+- Scenario definitions that directly call internal functions from env.py
 """
+
+import json
 import os
 
-from grading import PROBLEM_REGISTRY, ProblemSpec
 import tasks  # noqa: F401 - registers problems
-
+from grading import PROBLEM_REGISTRY, ProblemSpec
 
 # ============================================================================
 # Shared Helpers (used by scenarios and CLI)
@@ -38,9 +35,9 @@ def spec_to_statement(spec: ProblemSpec, hints_enabled: bool = False) -> str:
         statement += "\n\n" + f"<HINTS>{hint_text}</HINTS>"
 
     # [CUSTOMIZE] Update this template for your project
-    template = """
-You will be working on a task for [PROJECT_NAME].
-The repository has already been cloned in the environment in /home/ubuntu/[PROJECT_NAME].
+    template = f"""
+You will be working on a task for {os.environ.get('FOLDER_NAME')}.
+The repository has already been cloned in the environment in /home/ubuntu/{os.environ.get('FOLDER_NAME')}.
 
 [Add any project-specific instructions here, for example:
 - How to run tests
@@ -57,7 +54,7 @@ Use the tools provided to complete the following task:
 
 def get_project_dir() -> str:
     """Get the project directory from environment or default."""
-    return os.getenv("PROJECT_DIR", "/home/ubuntu/[PROJECT_NAME]")
+    return os.getenv("PROJECT_DIR", f"/home/ubuntu/{os.environ.get('FOLDER_NAME')}")
 
 
 # ============================================================================
@@ -66,12 +63,7 @@ def get_project_dir() -> str:
 
 
 def register_scenarios(env) -> None:
-    """Register all scenarios on the environment.
-    
-    Scenarios use env.call_tool() which automatically routes to:
-    - Local tool functions (when running in container)
-    - Remote tools via HTTP (when connected to dev server)
-    """
+    """Register all scenarios on the environment."""
 
     @env.scenario("solve-task")
     async def solve_task(problem_id: str, hints_enabled: bool = False):
@@ -82,22 +74,23 @@ def register_scenarios(env) -> None:
             hints_enabled: Whether to include hints in the prompt
 
         This scenario:
-        1. Calls _start_services (starts postgres, redis, VNC, xfce4)
-        2. Calls _setup_codebase (prepares the project)
+        1. Sets PROBLEM_ID env var for patch selection
+        2. Sets up the codebase
         3. Yields prompt to agent
-        4. Calls _grade_solution after agent finishes
+        4. Grades solution after agent finishes
         """
-        spec = get_problem_spec(problem_id)
-        project_dir = get_project_dir()
-
-        # Setup phase: call internal tools
-        await env.call_tool("_start_services")
-        await env.call_tool("_setup_codebase", {"project_dir": project_dir})
+        # Set PROBLEM_ID env var so grading runner can find the correct patches
+        os.environ["PROBLEM_ID"] = problem_id
 
         # Yield prompt to agent
-        prompt = spec_to_statement(spec, hints_enabled)
+        prompt_result = await env.call_tool("setup_problem", problem_id=problem_id)
+        # Extract text from MCPToolResult
+        prompt = prompt_result.content[0].text if prompt_result.content else ""
         _ = yield prompt
 
-        # Evaluate: call grading
-        result = await env.call_tool("_grade_solution", {"problem_id": problem_id})
+        # Evaluate: call grading 
+        grade_result = await env.call_tool("grade_problem", problem_id=problem_id)
+        # Extract and parse JSON from MCPToolResult
+        grade_text = grade_result.content[0].text if grade_result.content else "{}"
+        result = json.loads(grade_text)
         yield result["score"]

@@ -13,20 +13,11 @@ from pathlib import Path
 import click
 
 from env import env
-from grading import EnvironmentState
+from grading import EnvironmentState, Grade
 from scenarios import get_problem_spec, get_project_dir, spec_to_statement
-from services import ServiceLoader, SimpleDinit
+
 
 logger = logging.getLogger(__name__)
-
-
-async def _start_services() -> None:
-    """Start all dinit services."""
-    logger.info("Starting dinit services")
-    loader = ServiceLoader(Path("/etc/dinit.d"))
-    services = loader.load_all()
-    engine = SimpleDinit(services)
-    engine.start("boot")
 
 
 def _setup_codebase(project_dir: str) -> None:
@@ -61,18 +52,20 @@ async def _setup_problem(problem_id: str) -> str:
     logger.info("Problem ID: %s", problem_id)
     logger.info("Spec: %s", spec)
 
-    # Start the dinit services
-    await _start_services()
     logger.info("=== Starting setup_problem for %s ===", problem_id)
     _setup_codebase(project_dir)
 
     return spec_to_statement(spec)
 
 
-async def _grade_problem(problem_id: str) -> dict:
+async def _grade_problem(problem_id: str) -> Grade:
     """Grade a problem solution."""
     spec = get_problem_spec(problem_id)
     state = EnvironmentState()
+
+    if spec.solution_fn is None:
+        raise ValueError(f"Problem {problem_id} missing grading function")
+
     return spec.solution_fn(state)
 
 
@@ -95,8 +88,12 @@ def grade_problem_script(
 ) -> None:
     """Grade a problem solution and return the grade results."""
     grade = asyncio.run(_grade_problem(problem_id))
-    with open(output_path, "w") as f:
-        f.write(grade.metadata["AgentPatchGrader"]["junit"])
+    if grade.metadata:
+        for _, grader_data in grade.metadata.items():
+            if isinstance(grader_data, dict) and "junit" in grader_data:
+                with open(output_path, "w") as f:
+                    f.write(grader_data["junit"])
+                break
     print(grade)
 
 

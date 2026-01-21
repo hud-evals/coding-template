@@ -22,6 +22,7 @@ from pathlib import Path
 
 from packaging import version
 
+from .constants import SAMPLE_REPO_URL
 from .utils import merge_junits
 
 logger = logging.getLogger(__name__)
@@ -35,34 +36,51 @@ class GradingRunner:
         test: str,
         golden: str,
         playwright_test_files: list[str] | None = None,
-        mocha_test_files: list[str] | None = None, # Warning: ignored for now
+        mocha_test_files: list[str] | None = None,  # Warning: ignored for now
         test_files: list[str] | None = None,
-        test_patch_path: str = "/home/root/test.patch",
-        golden_patch_path: str = "/home/root/golden.patch",
+        problem_id: str | None = None,
+        patches_base_dir: str = "/home/root/patches",
         only_server: bool = False,
     ):
         """
         Initialize the grading runner.
 
         Args:
-            base: The baseline branch name (preferred)
-            test: The test branch name (optional, for logging)
-            golden: The golden branch name (optional, for logging)
+            base: The baseline branch name (for logging/metadata)
+            test: The test branch name (for logging/metadata)
+            golden: The golden branch name (for logging/metadata)
             test_files: List of test files to run
-            test_patch_path: Path to the test patch file (default: /home/root/test.patch)
-            golden_patch_path: Path to the golden patch file (default: /home/root/golden.patch)
-            working_dir: Working directory for grading (default: /tmp/grading_workspace)
+            problem_id: Problem ID to select patches from patches_base_dir.
+                       If not provided, falls back to PROBLEM_ID env var.
+            patches_base_dir: Base directory containing problem patches
+                             (default: /home/root/patches)
+            only_server: Whether to only start the server without running tests
         """
         # Determine what to use - branches take precedence
         self.use_base = base
         self.use_test = test
         self.use_golden = golden
-        self.test_patch_path = test_patch_path
-        self.golden_patch_path = golden_patch_path
         self.test_files = test_files or []
         self.only_server = only_server
         self.grade_working_dir = "/tmp/grading_workspace_" + str(uuid.uuid4())
-        self.original_repo_path = os.environ.get("REPO_PATH", "/home/ubuntu/repo")
+        self.original_repo_path = os.environ.get("REPO_PATH", f"/home/ubuntu/{os.environ.get('FOLDER_NAME')}")
+
+        # Resolve problem_id from parameter or environment
+        self.problem_id = problem_id or os.environ.get("PROBLEM_ID")
+
+        if not self.problem_id:
+            raise ValueError(
+                "problem_id is required. Set PROBLEM_ID env var or pass problem_id parameter."
+            )
+
+        # Derive patch paths from problem_id
+        self.test_patch_path = os.path.join(
+            patches_base_dir, self.problem_id, "test.patch"
+        )
+        self.golden_patch_path = os.path.join(
+            patches_base_dir, self.problem_id, "golden.patch"
+        )
+        logger.info(f"Using patches for problem '{self.problem_id}' from {patches_base_dir}")
         
         # Store references to server process and threads for cleanup
         self.server_process = None
@@ -116,10 +134,18 @@ class GradingRunner:
         xml_file = "cargo_results.xml"
         """
         logger.info(f"Running tests in {self.grade_working_dir}")
-        
-        # [CUSTOMIZE] Set your test command here
-        test_command = "[TEST_COMMAND] " + " ".join(self.test_files)
-        
+
+        # [CUSTOMIZE] Remove this conditional block when customizing
+        if os.environ.get("REPO_URL") == SAMPLE_REPO_URL:
+            xml_file = "pytest_results.xml"
+            # Use full path to pytest from the virtualenv
+            test_command = f"/mcp_server/.venv/bin/python -m pytest --junit-xml={xml_file} {' '.join(self.test_files)}"
+        else:
+            # [CUSTOMIZE] Set your test command here
+            test_command = "[TEST_COMMAND] " + " ".join(self.test_files)
+            # [CUSTOMIZE] Set your test results XML file path
+            xml_file = "[TEST_RESULTS_XML_FILE]"
+
         result = subprocess.run(
             ["sudo", "-u", "ubuntu", "bash", "-lc", test_command],
             cwd=Path(self.grade_working_dir),
@@ -130,10 +156,7 @@ class GradingRunner:
         logger.info(f"Tests completed with code: {result.returncode}")
         logger.info(f"Test output: {result.stdout}")
         logger.info(f"Test error: {result.stderr}")
-        
-        # [CUSTOMIZE] Set your test results XML file path
-        xml_file = "[TEST_RESULTS_XML_FILE]"
-        
+
         with open(Path(self.grade_working_dir) / xml_file) as f:
             return f.read()
 
@@ -189,21 +212,25 @@ class GradingRunner:
 
     def _needs_server_start(self) -> bool:
         """Check if current version needs server to be started for tests."""
+        # [CUSTOMIZE] Remove this conditional block when customizing
+        if os.environ.get("REPO_URL") == SAMPLE_REPO_URL:
+            return False  # Sample repo tests don't need a server
+
         try:
             # Read package.json version from the working directory
             package_json_path = Path(self.grade_working_dir) / "package.json"
             with open(package_json_path) as f:
                 package_data = json.load(f)
-            
+
             current_version = package_data.get("version", "0.0.0")
-            
+
             # At least version 0.66.2 (may be larger, im using attachmentsvalidation_baseline as a reference)
             threshold_version = "0.66.2"
-            
+
             needs_server = version.parse(current_version) <= version.parse(threshold_version)
             logger.info(f"Current version: {current_version}, Server needed: {needs_server} (version {'<=' if needs_server else '>'} {threshold_version})")
             return needs_server
-            
+
         except Exception as e:
             logger.warning(f"Error checking package.json version: {e}, assuming server needed")
             return True
@@ -211,15 +238,18 @@ class GradingRunner:
     def run_grading(self) -> tuple[bool, dict]:
         """Run the complete grading workflow."""
         logger.info("Starting grading workflow")
-        # Step 1: Copy original repo to working dir
+        # Step 1: Copy original repo to working dir (as root to access .git)
         logger.info(f"Copying original repo to {self.grade_working_dir}")
-        subprocess.run(["sudo", "-u", "ubuntu", "cp", "-r", self.original_repo_path, self.grade_working_dir], check=True)
+        # Use trailing slash to copy contents, not the directory itself
+        subprocess.run(["cp", "-rT", self.original_repo_path, self.grade_working_dir], check=True)
+        # Make the copy accessible to ubuntu for test execution
+        subprocess.run(["chown", "-R", "ubuntu:ubuntu", self.grade_working_dir], check=True)
         logger.info(f"Copied original repo to {self.grade_working_dir}")
 
         # Step 2: apply test patch
         logger.info(f"Applying test patch to {self.grade_working_dir}")
         with open(self.test_patch_path) as f:
-            subprocess.run(["sudo", "-u", "ubuntu", "git", "apply"], check=True, cwd=self.grade_working_dir, input=f.read().encode("utf-8"))
+            subprocess.run(["git", "apply"], check=True, cwd=self.grade_working_dir, input=f.read().encode("utf-8"))
         logger.info(f"Applied test patch to {self.grade_working_dir}")
 
         # Step 3: Clean up any generated files that might interfere with the build
@@ -235,7 +265,12 @@ class GradingRunner:
         #   Java: "mvn package -DskipTests"
         #   Rust: "cargo build --release"
         #   C++: "cd build && cmake .. && make"
-        build_command = "[BUILD_COMMAND]"
+
+        # [CUSTOMIZE] Remove this conditional block when customizing
+        if os.environ.get("REPO_URL") == SAMPLE_REPO_URL:
+            build_command = "true"  # No build needed for sample Python repo
+        else:
+            build_command = "[BUILD_COMMAND]"
         
         # Run build and stream output to stderr in real-time
         build_process = subprocess.Popen(
@@ -302,14 +337,22 @@ class GradingRunner:
         #   Django: "python manage.py migrate --noinput"
         #   Rails: "bundle exec rake db:migrate"
         #   Prisma: "npx prisma migrate deploy"
-        migrate_cmd = "[MIGRATION_COMMAND]"  # Or None if no migrations
 
-        drop_res = subprocess.run(["bash", "-lc", drop_cmd], cwd=self.grade_working_dir, capture_output=True, text=True)
-        logger.info(f"Drop DB exit: {drop_res.returncode}\n{drop_res.stdout}\n{drop_res.stderr}")
-        create_res = subprocess.run(["bash", "-lc", create_cmd], cwd=self.grade_working_dir, capture_output=True, text=True)
-        logger.info(f"Create DB exit: {create_res.returncode}\n{create_res.stdout}\n{create_res.stderr}")
-        migrate_res = subprocess.run(["sudo", "-u", "ubuntu", "bash", "-lc", migrate_cmd], cwd=self.grade_working_dir, capture_output=True, text=True)
-        logger.info(f"Migrate exit: {migrate_res.returncode}\n{migrate_res.stdout}\n{migrate_res.stderr}")
+        # [CUSTOMIZE] Remove this conditional block when customizing
+        if os.environ.get("REPO_URL") == SAMPLE_REPO_URL:
+            migrate_cmd = None  # No database for sample Python repo
+        else:
+            migrate_cmd = "[MIGRATION_COMMAND]"  # Or None if no migrations
+
+        if migrate_cmd:
+            drop_res = subprocess.run(["bash", "-lc", drop_cmd], cwd=self.grade_working_dir, capture_output=True, text=True)
+            logger.info(f"Drop DB exit: {drop_res.returncode}\n{drop_res.stdout}\n{drop_res.stderr}")
+            create_res = subprocess.run(["bash", "-lc", create_cmd], cwd=self.grade_working_dir, capture_output=True, text=True)
+            logger.info(f"Create DB exit: {create_res.returncode}\n{create_res.stdout}\n{create_res.stderr}")
+            migrate_res = subprocess.run(["sudo", "-u", "ubuntu", "bash", "-lc", migrate_cmd], cwd=self.grade_working_dir, capture_output=True, text=True)
+            logger.info(f"Migrate exit: {migrate_res.returncode}\n{migrate_res.stdout}\n{migrate_res.stderr}")
+        else:
+            logger.info("Skipping database setup (no migration command configured)")
 
         # Step 6: Conditionally start server based on version
         if self._needs_server_start():
