@@ -1,13 +1,13 @@
 # Instructions
 
-This walkthrough will get you set up running a sample task from our [source repo](https://github.com/hud-evals/coding-template-sample), which asks the agent to fix a small bug in an HTTP server.
+This walkthrough will get you set up running a sample task from our [source repo](https://github.com/hud-evals/coding-template-sample), which asks the agent to fix a small bug in an HTTP server. This template is meant for tasks that ask the agent to make modifications to code in a live shell environment, after which a set of hidden unit tests or integration tests will be run to verify task completion. At the end of this walkthrough, you'll be able to see Claude Sonnet 4.5 solve one such task in real time via HUD's user interface.
 
 ## 1. Deploy to Platform
 
 If you haven't already, connect this repo to hud.ai:
 
 1. Push to GitHub
-2. Go to [hud.ai](https://hud.ai) → **New** → **Environment**
+2. Go to [hud.ai](https://hud.ai) → **Environments** → **New Environment**
 3. Connect your GitHub repo
 4. Your environment builds automatically on each push. You can also build it manually via [your environment] > Build.
 
@@ -16,7 +16,7 @@ Once deployed, your environment is accessible by its slug (e.g., `my-org/coding`
 
 ## 2. Create a new taskset and add your first task
 
-1. Go to Tasksets > New Tasksets and create a new taskset
+1. Go to **Tasksets** → **New Taskset** and create a new taskset
 2. Go to your environment and enter `sample_json_bug` as the `problem_id`. You'll see that this corresponds to the single existing task in `coding-template/tasks/basic.py`.
 3. Click on "Create Task" and add this to your taskset.
 
