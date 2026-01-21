@@ -35,9 +35,9 @@ def spec_to_statement(spec: ProblemSpec, hints_enabled: bool = False) -> str:
         statement += "\n\n" + f"<HINTS>{hint_text}</HINTS>"
 
     # [CUSTOMIZE] Update this template for your project
-    template = """
-You will be working on a task for [PROJECT_NAME].
-The repository has already been cloned in the environment in /home/ubuntu/[PROJECT_NAME].
+    template = f"""
+You will be working on a task for {os.environ.get('FOLDER_NAME')}.
+The repository has already been cloned in the environment in /home/ubuntu/{os.environ.get('FOLDER_NAME')}.
 
 [Add any project-specific instructions here, for example:
 - How to run tests
@@ -54,7 +54,7 @@ Use the tools provided to complete the following task:
 
 def get_project_dir() -> str:
     """Get the project directory from environment or default."""
-    return os.getenv("PROJECT_DIR", "/home/ubuntu/[PROJECT_NAME]")
+    return os.getenv("PROJECT_DIR", f"/home/ubuntu/{os.environ.get('FOLDER_NAME')}")
 
 
 # ============================================================================

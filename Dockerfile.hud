@@ -59,6 +59,7 @@ ARG FOLDER_NAME="project"
 # code for compatibility with the sample repo. See comments marked with [CUSTOMIZE]
 #Remove if not needed.
 ENV REPO_URL=${REPO_URL}
+ENV FOLDER_NAME=${FOLDER_NAME}
 
 # Clone and fetch all branches (needed for runtime checkout of baseline/test/golden)
 # If CODING_GITHUB_TOKEN secret is provided, use it for private repos; otherwise clone public repo

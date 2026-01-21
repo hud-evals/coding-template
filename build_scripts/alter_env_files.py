@@ -67,7 +67,7 @@ def main():
     - Set API keys or secrets (use secure values for testing)
     """
     
-    project_dir = os.environ.get("PROJECT_DIR", "/home/ubuntu/[PROJECT_NAME]")
+    project_dir = os.environ.get("PROJECT_DIR", f"/home/ubuntu/{os.environ.get('FOLDER_NAME')}")
     
     # [CUSTOMIZE] Configure your environment files here
     # Example:

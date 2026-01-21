@@ -1,24 +1,43 @@
 # Coding Environment Template
 
-A full coding environment for agent evaluations. Provides bash, file editing, and VNC desktop. Uses `dinit` for services (Postgres, Redis, VNC).
+A coding environment for agent evaluations. Provides bash and file editing tools.
 
 > **⚠️ This is a template.** Before building, customize `Dockerfile.hud` for your project.
 
+## Quick Start (Sample Repo)
+
+To test the template with the sample repository:
+
+```bash
+hud build . --build-arg REPO_URL=https://github.com/hud-evals/coding-template-sample
+hud dev --port 8765
+python local_test.py
+```
+
 ## Template Setup
 
-Replace `[PROJECT_NAME]` throughout the template with your project name. Then, edit `Dockerfile.hud` to configure your project:
+The Dockerfile uses two build arguments:
+
+| Argument | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `REPO_URL` | **Yes** | *(none)* | Git repository URL to clone |
+| `FOLDER_NAME` | No | `project` | Folder name for the cloned repo |
 
 ```dockerfile
-# 1. Configure your repository URL (or pass this as a build argument)
-ARG REPO_URL=https://github.com/your-org/your-repo
+# Required: Pass REPO_URL as a build argument
+ARG REPO_URL
+ARG FOLDER_NAME="project"
 
-# 2. Set working directory
-WORKDIR /home/ubuntu/[PROJECT_NAME]
+# The repo is cloned to /home/ubuntu/${FOLDER_NAME}
+WORKDIR /home/ubuntu/${FOLDER_NAME}
+```
 
-# 3. (Optional) Before you build the Dockerfile, set CODING_GITHUB_TOKEN as an environment variable locally (not inside the Dockerfile)
+For private repos, set `CODING_GITHUB_TOKEN` locally before building:
 
-# This will be mounted as a secret if provided and is necessary for cloning private repositories
+```bash
 export CODING_GITHUB_TOKEN=github_pat_XXX
+hud build . --build-arg REPO_URL=https://github.com/your-org/your-repo \
+            --secret id=CODING_GITHUB_TOKEN,env=CODING_GITHUB_TOKEN
 ```
 
 Every task in `tasks/*.py` follows the **3-branch pattern**, where each branch exists in the source repo cloned in the Dockerfile:
@@ -30,7 +49,7 @@ Every task in `tasks/*.py` follows the **3-branch pattern**, where each branch e
 
 Git patches will automatically be generated for every branch defined in each task.
 
-If you're **not using git-based problems**, comment out the git section in the Dockerfile (lines ~126-166).
+If you're **not using git-based problems**, comment out the git clone section in `Dockerfile.hud` (lines ~63-87).
 
 ## 1. Deploy to Platform
 
@@ -160,14 +179,15 @@ async with hud.eval(tasks, variants=variants, group=2) as ctx:
 
 ## Local Development
 
-This environment requires Docker (for VNC, Postgres, etc.). Use `hud dev` with hot-reload:
+This environment requires Docker. Use `hud dev` with hot-reload:
 
 ```bash
-# 1a. Build the Docker image (first time only)
+# 1. Build the Docker image (first time only)
 hud build . --build-arg REPO_URL=https://github.com/your-org/your-repo
 
-# 1b. Build the Docker image with a build secret (for private repos)
-hud build . --build-arg REPO_URL=https://github.com/your-org/your-repo --secret id=CODING_GITHUB_TOKEN,env=CODING_GITHUB_TOKEN
+# For private repos, also pass the secret:
+hud build . --build-arg REPO_URL=https://github.com/your-org/your-repo \
+            --secret id=CODING_GITHUB_TOKEN,env=CODING_GITHUB_TOKEN
 
 # 2. Start with hot-reload on tasks/grading
 hud dev -w tasks -w grading --port 8765
@@ -229,25 +249,25 @@ In `Dockerfile.hud`, uncomment and configure the section for your language:
 ```dockerfile
 RUN python3 -m pip install --upgrade pip
 RUN pip install poetry  # or: pipenv, pip-tools
-RUN cd /home/ubuntu/myproject && pip install -r requirements.txt
+RUN cd /home/ubuntu/${FOLDER_NAME} && pip install -r requirements.txt
 ```
 
 **Java/Maven:**
 ```dockerfile
 RUN apt-get install -y openjdk-17-jdk maven
-RUN cd /home/ubuntu/myproject && mvn dependency:resolve
+RUN cd /home/ubuntu/${FOLDER_NAME} && mvn dependency:resolve
 ```
 
 **Go:**
 ```dockerfile
 RUN wget https://go.dev/dl/go1.21.0.linux-amd64.tar.gz && tar -C /usr/local -xzf go*.tar.gz
-RUN cd /home/ubuntu/myproject && go mod download
+RUN cd /home/ubuntu/${FOLDER_NAME} && go mod download
 ```
 
 **Rust:**
 ```dockerfile
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-RUN cd /home/ubuntu/myproject && cargo fetch
+RUN cd /home/ubuntu/${FOLDER_NAME} && cargo fetch
 ```
 
 ### 3. Configure Test Framework
