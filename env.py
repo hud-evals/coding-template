@@ -43,6 +43,11 @@ _gemini_search_tool: GeminiSearchTool | None = None
 _gemini_edit_tool: GeminiEditTool | None = None
 
 
+def _get_project_dir() -> str:
+    """Get the project directory path."""
+    return os.getenv("PROJECT_DIR", f"/home/ubuntu/{os.environ.get('FOLDER_NAME', 'project')}")
+
+
 @env.initialize
 async def initialize() -> None:
     """Initialize the coding environment tools."""
@@ -53,12 +58,16 @@ async def initialize() -> None:
     logger.info("Initializing coding environment")
     _bash_tool = BashTool()
     _edit_tool = EditTool()
-    _gemini_shell_tool = GeminiShellTool()
-    _gemini_read_tool = GeminiReadTool()
-    _gemini_list_tool = GeminiListTool()
-    _gemini_glob_tool = GeminiGlobTool()
-    _gemini_search_tool = GeminiSearchTool()
-    _gemini_edit_tool = GeminiEditTool()
+
+    # Initialize Gemini tools with the project directory as base_path/base_directory
+    # This allows relative paths like "server/routes/api/documents.ts" to work
+    project_dir = _get_project_dir()
+    _gemini_shell_tool = GeminiShellTool(base_directory=project_dir)
+    _gemini_read_tool = GeminiReadTool(base_path=project_dir)
+    _gemini_list_tool = GeminiListTool(base_path=project_dir)
+    _gemini_glob_tool = GeminiGlobTool(base_path=project_dir)
+    _gemini_search_tool = GeminiSearchTool(base_path=project_dir)
+    _gemini_edit_tool = GeminiEditTool(base_directory=project_dir)
 
     logger.info("Coding environment initialized")
 
