@@ -14,10 +14,16 @@ from pathlib import Path
 from typing import Any
 
 from hud import Environment
+from hud.tools.coding import GeminiEditTool, GeminiShellTool
+from hud.tools.filesystem import GeminiGlobTool, GeminiListTool, GeminiReadTool, GeminiSearchTool
 
 from grading import EnvironmentState
 from scenarios import get_problem_spec, register_scenarios
-from tools import BashTool, EditTool, ToolError
+from tools import (
+    BashTool,
+    EditTool,
+    ToolError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,15 +34,31 @@ env = Environment("coding")
 _bash_tool: BashTool | None = None
 _edit_tool: EditTool | None = None
 
+# Gemini tools
+_gemini_shell_tool: GeminiShellTool | None = None
+_gemini_read_tool: GeminiReadTool | None = None
+_gemini_list_tool: GeminiListTool | None = None
+_gemini_glob_tool: GeminiGlobTool | None = None
+_gemini_search_tool: GeminiSearchTool | None = None
+_gemini_edit_tool: GeminiEditTool | None = None
+
 
 @env.initialize
 async def initialize() -> None:
     """Initialize the coding environment tools."""
     global _bash_tool, _edit_tool
+    global _gemini_shell_tool, _gemini_read_tool, _gemini_list_tool
+    global _gemini_glob_tool, _gemini_search_tool, _gemini_edit_tool
 
     logger.info("Initializing coding environment")
     _bash_tool = BashTool()
     _edit_tool = EditTool()
+    _gemini_shell_tool = GeminiShellTool()
+    _gemini_read_tool = GeminiReadTool()
+    _gemini_list_tool = GeminiListTool()
+    _gemini_glob_tool = GeminiGlobTool()
+    _gemini_search_tool = GeminiSearchTool()
+    _gemini_edit_tool = GeminiEditTool()
 
     logger.info("Coding environment initialized")
 
@@ -45,12 +67,23 @@ async def initialize() -> None:
 async def shutdown() -> None:
     """Clean up the coding environment."""
     global _bash_tool, _edit_tool
+    global _gemini_shell_tool, _gemini_read_tool, _gemini_list_tool
+    global _gemini_glob_tool, _gemini_search_tool, _gemini_edit_tool
 
     if _bash_tool and _bash_tool._session:
         _bash_tool._session.stop()
 
     _bash_tool = None
     _edit_tool = None
+
+    # Clean up Gemini tools
+    _gemini_shell_tool = None
+    _gemini_read_tool = None
+    _gemini_list_tool = None
+    _gemini_glob_tool = None
+    _gemini_search_tool = None
+    _gemini_edit_tool = None
+
     logger.info("Coding environment shut down")
 
 
@@ -129,6 +162,200 @@ async def editor(
         return result.output or ""
     except ToolError as e:
         return f"Error: {e.message}"
+
+
+# ============================================================================
+# Gemini Tools
+# ============================================================================
+
+
+def _extract_text(result: list) -> str:
+    """Extract text content from hud tool results."""
+    texts = []
+    for block in result:
+        if hasattr(block, "text"):
+            texts.append(block.text)
+    return "\n".join(texts) if texts else ""
+
+
+@env.tool()
+async def gemini_shell(
+    command: str,
+    description: str | None = None,
+    dir_path: str | None = None,
+    timeout_ms: int | None = None,
+) -> str:
+    """Execute a shell command (Gemini-style).
+
+    Args:
+        command: The command to execute
+        description: Optional description of the command
+        dir_path: Working directory for the command
+        timeout_ms: Execution timeout in milliseconds
+
+    Returns:
+        The command output
+    """
+    if _gemini_shell_tool is None:
+        return "Error: Gemini shell tool not initialized"
+
+    try:
+        result = await _gemini_shell_tool(
+            command=command,
+            description=description,
+            dir_path=dir_path,
+            timeout_ms=timeout_ms,
+        )
+        return _extract_text(result)
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@env.tool()
+async def gemini_read(
+    file_path: str,
+    offset: int | None = None,
+    limit: int | None = None,
+) -> str:
+    """Read a file with optional line offset and limit (Gemini-style).
+
+    Args:
+        file_path: Path to the file to read
+        offset: Starting line number (0-based)
+        limit: Maximum number of lines to retrieve
+
+    Returns:
+        File content with truncation info
+    """
+    if _gemini_read_tool is None:
+        return "Error: Gemini read tool not initialized"
+
+    try:
+        result = await _gemini_read_tool(file_path=file_path, offset=offset, limit=limit)
+        return _extract_text(result)
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@env.tool()
+async def gemini_list(
+    dir_path: str,
+    ignore: list[str] | None = None,
+) -> str:
+    """List directory contents with DIR prefix (Gemini-style).
+
+    Args:
+        dir_path: Target directory to enumerate
+        ignore: Glob patterns for exclusion
+
+    Returns:
+        Directory listing with DIR prefix for directories
+    """
+    if _gemini_list_tool is None:
+        return "Error: Gemini list tool not initialized"
+
+    try:
+        result = await _gemini_list_tool(dir_path=dir_path, ignore=ignore)
+        return _extract_text(result)
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@env.tool()
+async def gemini_glob(
+    pattern: str,
+    dir_path: str | None = None,
+    case_sensitive: bool = True,
+    respect_git_ignore: bool = True,
+) -> str:
+    """Find files matching a glob pattern (Gemini-style).
+
+    Args:
+        pattern: Glob pattern for file matching
+        dir_path: Base directory for search (defaults to cwd)
+        case_sensitive: Enable case-sensitive matching (default: True)
+        respect_git_ignore: Honor .gitignore rules (default: True)
+
+    Returns:
+        List of absolute paths sorted alphabetically
+    """
+    if _gemini_glob_tool is None:
+        return "Error: Gemini glob tool not initialized"
+
+    try:
+        result = await _gemini_glob_tool(
+            pattern=pattern,
+            dir_path=dir_path,
+            case_sensitive=case_sensitive,
+            respect_git_ignore=respect_git_ignore,
+        )
+        return _extract_text(result)
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@env.tool()
+async def gemini_search(
+    pattern: str,
+    dir_path: str | None = None,
+    include: str | None = None,
+) -> str:
+    """Search file contents using regex (Gemini-style).
+
+    Args:
+        pattern: Regular expression to match
+        dir_path: Directory to search within (defaults to cwd)
+        include: Glob filter for filenames (e.g., "*.ts")
+
+    Returns:
+        Matches grouped by file with line numbers
+    """
+    if _gemini_search_tool is None:
+        return "Error: Gemini search tool not initialized"
+
+    try:
+        result = await _gemini_search_tool(
+            pattern=pattern, dir_path=dir_path, include=include
+        )
+        return _extract_text(result)
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@env.tool()
+async def gemini_edit(
+    file_path: str,
+    instruction: str,
+    old_string: str,
+    new_string: str,
+    expected_replacements: int = 1,
+) -> str:
+    """Replace content in a file (Gemini-style).
+
+    Args:
+        file_path: Path to the target file
+        instruction: Description of the edit being made
+        old_string: Text to find and replace
+        new_string: Replacement text
+        expected_replacements: Number of expected replacements (default: 1)
+
+    Returns:
+        Success message with updated section preview
+    """
+    if _gemini_edit_tool is None:
+        return "Error: Gemini edit tool not initialized"
+
+    try:
+        result = await _gemini_edit_tool(
+            file_path=file_path,
+            instruction=instruction,
+            old_string=old_string,
+            new_string=new_string,
+            expected_replacements=expected_replacements,
+        )
+        return _extract_text(result)
+    except Exception as e:
+        return f"Error: {e}"
 
 
 # ============================================================================
@@ -217,6 +444,7 @@ async def setup_problem(problem_id: str) -> str:
         The problem statement/prompt for the agent
     """
     import subprocess
+
     from scenarios import get_project_dir, spec_to_statement
 
     spec = get_problem_spec(problem_id)
