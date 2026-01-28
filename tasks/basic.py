@@ -5,38 +5,33 @@ from grading import SAMPLE_REPO_URL, AgentPatchGrader, EnvironmentState, Grade, 
 
 logger = logging.getLogger(__name__)
 
-# ==============================================================================
-# SAMPLE TASK: Only registered when using the sample repository
-# Remove this section if not using the sample repository
-# ==============================================================================
-if os.environ.get("REPO_URL") == SAMPLE_REPO_URL:
-    @problem(
-        id="sample_json_bug",
-        description="""Fix the JSON serialization bug in server.py.
+@problem(
+    id="sample_json_bug",
+    description="""Fix the JSON serialization bug in server.py.
 
-The API server's responses are malformed. When you make a request to any endpoint,
-the response body is not valid JSON - it looks like a Python dict representation
-instead of proper JSON (e.g., single quotes instead of double quotes).
-""",
-        hints=[],
-        difficulty="easy",
-        task_type="coding",
-        review_level="no-review",
-        base="server_fix_baseline",
-        test="server_fix_test",
-        golden="server_fix_golden",
-    )
-    def sample_json_bug(state: EnvironmentState) -> Grade:
-        return Grade.from_subscores([
-            AgentPatchGrader.grade(
-                state=state,
-                weight=1.0,
-                base="server_fix_baseline",
-                test="server_fix_test",
-                golden="server_fix_golden",
-                test_files=["test_server.py"],
-            )
-        ])
+    The API server's responses are malformed. When you make a request to any endpoint,
+    the response body is not valid JSON - it looks like a Python dict representation
+    instead of proper JSON (e.g., single quotes instead of double quotes).
+    """,
+    hints=[],
+    difficulty="easy",
+    task_type="coding",
+    review_level="no-review",
+    base="server_fix_baseline",
+    test="server_fix_test",
+    golden="server_fix_golden",
+)
+def sample_json_bug(state: EnvironmentState) -> Grade:
+    return Grade.from_subscores([
+        AgentPatchGrader.grade(
+            state=state,
+            weight=1.0,
+            base="server_fix_baseline",
+            test="server_fix_test",
+            golden="server_fix_golden",
+            test_files=["test_server.py"],
+        )
+    ])
 
 
 # ==============================================================================
