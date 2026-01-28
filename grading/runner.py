@@ -139,7 +139,7 @@ class GradingRunner:
         if os.environ.get("REPO_URL") == SAMPLE_REPO_URL:
             xml_file = "pytest_results.xml"
             # Use full path to pytest from the virtualenv
-            test_command = f"/mcp_server/.venv/bin/python -m pytest --junit-xml={xml_file} {' '.join(self.test_files)}"
+            test_command = f"uv run pytest --junit-xml={xml_file} {' '.join(self.test_files)}"
         else:
             # [CUSTOMIZE] Set your test command here
             test_command = "[TEST_COMMAND] " + " ".join(self.test_files)
@@ -147,7 +147,7 @@ class GradingRunner:
             xml_file = "[TEST_RESULTS_XML_FILE]"
 
         result = subprocess.run(
-            ["sudo", "-u", "ubuntu", "bash", "-lc", test_command],
+            ["bash", "-lc", test_command],
             cwd=Path(self.grade_working_dir),
             capture_output=True,
             text=True,
@@ -238,12 +238,10 @@ class GradingRunner:
     def run_grading(self) -> tuple[bool, dict]:
         """Run the complete grading workflow."""
         logger.info("Starting grading workflow")
-        # Step 1: Copy original repo to working dir (as root to access .git)
+        # Step 1: Copy original repo to working dir
         logger.info(f"Copying original repo to {self.grade_working_dir}")
-        # Use trailing slash to copy contents, not the directory itself
+        # Use -rT to copy contents, not the directory itself
         subprocess.run(["cp", "-rT", self.original_repo_path, self.grade_working_dir], check=True)
-        # Make the copy accessible to ubuntu for test execution
-        subprocess.run(["chown", "-R", "ubuntu:ubuntu", self.grade_working_dir], check=True)
         logger.info(f"Copied original repo to {self.grade_working_dir}")
 
         # Step 2: apply test patch
@@ -274,7 +272,7 @@ class GradingRunner:
         
         # Run build and stream output to stderr in real-time
         build_process = subprocess.Popen(
-            ["sudo", "-u", "ubuntu", "bash", "-lc", build_command],
+            ["bash", "-lc", build_command],
             cwd=self.grade_working_dir,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -349,7 +347,7 @@ class GradingRunner:
             logger.info(f"Drop DB exit: {drop_res.returncode}\n{drop_res.stdout}\n{drop_res.stderr}")
             create_res = subprocess.run(["bash", "-lc", create_cmd], cwd=self.grade_working_dir, capture_output=True, text=True)
             logger.info(f"Create DB exit: {create_res.returncode}\n{create_res.stdout}\n{create_res.stderr}")
-            migrate_res = subprocess.run(["sudo", "-u", "ubuntu", "bash", "-lc", migrate_cmd], cwd=self.grade_working_dir, capture_output=True, text=True)
+            migrate_res = subprocess.run(["bash", "-lc", migrate_cmd], cwd=self.grade_working_dir, capture_output=True, text=True, env={**os.environ, "HOME": "/home/ubuntu"})
             logger.info(f"Migrate exit: {migrate_res.returncode}\n{migrate_res.stdout}\n{migrate_res.stderr}")
         else:
             logger.info("Skipping database setup (no migration command configured)")
@@ -366,7 +364,7 @@ class GradingRunner:
             
             logger.info(f"Starting server with {server_start_cmd} (required for this version)")
             self.server_process = subprocess.Popen(
-                ["sudo", "-u", "ubuntu", "bash", "-lc", server_start_cmd],
+                ["bash", "-lc", server_start_cmd],
                 cwd=self.grade_working_dir,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
