@@ -6,10 +6,11 @@ This walkthrough will get you set up running a sample task from our [source repo
 
 If you haven't already, clone this template and connect the repo to hud.ai:
 
-1. Clone this template repository on GitHub
+1. Clone this template repository on GitHub as well as the [sample](https://github.com/hud-evals/coding-template-sample)
 2. Go to [hud.ai](https://hud.ai) → **Environments** → **New Environment**
 3. Connect your GitHub repo
-4. Your environment builds automatically on each push. You can also build it manually via [your environment] > Build.
+4. Set `REPO_URL` and `CODING_GITHUB_TOKEN` build args. The `CODING_GITHUB_TOKEN` should be a GitHub PAT scoped for content access to your `coding-template-sample` repo.
+5. Your environment builds automatically on each push. You can also build it manually via [your environment] > Build.
 
 Once deployed, your environment is accessible by its slug (e.g., `my-org/coding`).
 
