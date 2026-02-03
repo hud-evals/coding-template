@@ -1,6 +1,6 @@
 import logging
 
-from grading import AgentPatchGrader, EnvironmentState, Grade, HintSpec, problem
+from grading import AgentPatchGrader, Grade, HintSpec, problem
 
 logger = logging.getLogger(__name__)
 

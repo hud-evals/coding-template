@@ -1,7 +1,7 @@
 import logging
 import os
 
-from grading import SAMPLE_REPO_URL, AgentPatchGrader, EnvironmentState, Grade, problem
+from grading import SAMPLE_REPO_URL, AgentPatchGrader, Grade, problem
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +21,9 @@ logger = logging.getLogger(__name__)
     test="server_fix_test",
     golden="server_fix_golden",
 )
-def sample_json_bug(state: EnvironmentState) -> Grade:
+def sample_json_bug() -> Grade:
     return Grade.from_subscores([
         AgentPatchGrader.grade(
-            state=state,
             weight=1.0,
             base="server_fix_baseline",
             test="server_fix_test",

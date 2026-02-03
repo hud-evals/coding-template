@@ -1,15 +1,7 @@
-import importlib
 import logging
-import pkgutil
 from xml.etree import ElementTree as ET
 
 logger = logging.getLogger(__name__)
-
-def import_submodules(module):
-    """Import all submodules of a module, recursively"""
-    for _loader, module_name, _is_pkg in pkgutil.walk_packages(
-            module.__path__, module.__name__ + '.'):
-        importlib.import_module(module_name)
 
 
 def merge_junits(junit_xmls: list[str]) -> tuple[str, bool]:

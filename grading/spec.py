@@ -1,37 +1,23 @@
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Annotated, Any, Dict, List, Literal, Tuple, Union
+from typing import Any, Dict, List, Literal, Tuple, Union
 
 import numpy as np
-
-logger = logging.getLogger(__name__)
-
-
-def validate_grader_name(name: str) -> str:
-    """Validate a grader name."""
-    if not name:
-        raise ValueError("Grader name cannot be empty")
-    if not name.isidentifier():
-        raise ValueError("Grader name must be a valid Python identifier")
-    return name
-
-
-# Type for grader names that don't contain numbers
-GraderName = Annotated[str, "A grader name containing only letters, underscores, and hyphens"]
 
 
 @dataclass(kw_only=True, frozen=True)
 class SubGrade:
-    name: GraderName
+    name: str
     score: float
     weight: float
     parameters: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
-        # Validate the name, since we use hyphens and numbers to distinguish multiple subgraders of the same type
-        validate_grader_name(self.name)
+        if not self.name:
+            raise ValueError("Grader name cannot be empty")
+        if not self.name.isidentifier():
+            raise ValueError("Grader name must be a valid Python identifier")
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -90,26 +76,6 @@ class Grade:
         return Grade(subscores=subscores_dict, weights=weights_dict, metadata=metadata_dict)
 
 
-class EnvironmentState:
-    """The state of the environment at the time of grading."""
-
-    def __init__(self):
-        """Initialize the environment state without database functionality."""
-        logger.info("Initializing EnvironmentState without database")
-
-    @classmethod
-    def from_sqlite(cls, sqlite_path: str) -> "EnvironmentState":
-        """Create an EnvironmentState from an existing SQLite database file."""
-        # This method is kept for compatibility but no longer uses the database
-        logger.warning("from_sqlite method called but database functionality is disabled")
-        return cls()
-
-    def export_to_sqlite(self, sqlite_path: str) -> None:
-        """Export the current database state to a new SQLite file."""
-        # This method is kept for compatibility but no longer uses the database
-        logger.warning("export_to_sqlite method called but database functionality is disabled")
-
-
 # the different levels of review
 ReviewLevel = Literal[
     "no-review",
@@ -137,7 +103,7 @@ class ProblemSpec:
     hints: list[HintSpec]
     difficulty: str
     task_type: str
-    solution_fn: Callable[[EnvironmentState], Grade] = field(repr=False)
+    solution_fn: Callable[[], Grade] = field(repr=False)
     review_level: ReviewLevel
     # optional fields (with defaults)
     config: dict[str, Any] | None
@@ -173,7 +139,7 @@ def problem(
     test: str,
     golden: str,
 ):
-    def decorator(fn: Callable[[EnvironmentState], Grade]):
+    def decorator(fn: Callable[[], Grade]):
         spec = ProblemSpec(
             id=id,
             description=description,
@@ -201,9 +167,9 @@ class Grader:
     name: str = "BaseGrader"
 
     @classmethod
-    def grade(cls, state: EnvironmentState, weight: float, **kwargs) -> SubGrade:
-        """Grade the current state and return a SubGrade."""
-        result = cls.compute_score(state, **kwargs)
+    def grade(cls, weight: float, **kwargs) -> SubGrade:
+        """Grade and return a SubGrade."""
+        result = cls.compute_score(**kwargs)
 
         # Handle both float and tuple return types
         if isinstance(result, tuple):
@@ -215,7 +181,7 @@ class Grader:
         return SubGrade(name=cls.name, score=score, weight=weight, parameters=kwargs, metadata=metadata)
 
     @classmethod
-    def compute_score(cls, state: EnvironmentState, **kwargs) -> Union[float, Tuple[float, Dict[str, Any]]]:
+    def compute_score(cls, **kwargs) -> Union[float, Tuple[float, Dict[str, Any]]]:
         """
         Compute a score between 0.0 and 1.0 based on the current state.
 

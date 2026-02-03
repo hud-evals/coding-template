@@ -17,7 +17,6 @@ from hud import Environment
 from hud.tools.coding import GeminiEditTool, GeminiShellTool
 from hud.tools.filesystem import GeminiGlobTool, GeminiListTool, GeminiReadTool, GeminiSearchTool
 
-from grading import EnvironmentState
 from scenarios import get_problem_spec, register_scenarios
 from tools import (
     BashTool,
@@ -415,12 +414,11 @@ async def grade_solution(problem_id: str) -> dict[str, Any]:
     This is an internal tool called by scenarios after agent interaction.
     """
     spec = get_problem_spec(problem_id)
-    state = EnvironmentState()
 
     if spec.solution_fn is None:
         raise ValueError(f"Problem {problem_id} missing grading function")
 
-    grade = spec.solution_fn(state)
+    grade = spec.solution_fn()
 
     logger.info(
         "Grading complete: score=%.2f, subscores=%s",

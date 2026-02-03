@@ -9,8 +9,6 @@ import subprocess
 from .base import CLIResult, ToolError, ToolResult
 from .run import demote, maybe_truncate, run
 
-TRUNCATED_MESSAGE: str = "<response clipped><NOTE>To save on context only part of this file has been shown to you. You should retry this tool after you have searched inside the file with `grep -n` in order to find the line numbers of what you are looking for.</NOTE>"
-
 Command = Literal[
     "view",
     "create",
@@ -253,7 +251,7 @@ class EditTool:
     async def write_file(self, path: Path, file: str):
         """Write the content of a file to a given path; raise a ToolError if an error occurs."""
         try:
-            result = subprocess.run(f"sudo -u \\#1000 cat > {path} << 'EOF'\n{file}\nEOF", check=True, shell=True)
+            subprocess.run(f"sudo -u \\#1000 cat > {path} << 'EOF'\n{file}\nEOF", check=True, shell=True)
         except Exception as e:
             raise ToolError(f"Ran into {e} while trying to write to {path}") from None
 

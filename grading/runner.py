@@ -36,32 +36,27 @@ class GradingRunner:
         test: str,
         golden: str,
         playwright_test_files: list[str] | None = None,
-        mocha_test_files: list[str] | None = None,  # Warning: ignored for now
+        mocha_test_files: list[str] | None = None,
         test_files: list[str] | None = None,
         problem_id: str | None = None,
         patches_base_dir: str = "/home/root/patches",
-        only_server: bool = False,
     ):
         """
         Initialize the grading runner.
 
         Args:
-            base: The baseline branch name (for logging/metadata)
-            test: The test branch name (for logging/metadata)
-            golden: The golden branch name (for logging/metadata)
+            base: The baseline branch name (unused, for API compatibility)
+            test: The test branch name (unused, for API compatibility)
+            golden: The golden branch name (unused, for API compatibility)
+            playwright_test_files: Playwright test files (unused, for API compatibility)
+            mocha_test_files: Mocha test files (unused, for API compatibility)
             test_files: List of test files to run
             problem_id: Problem ID to select patches from patches_base_dir.
                        If not provided, falls back to PROBLEM_ID env var.
             patches_base_dir: Base directory containing problem patches
                              (default: /home/root/patches)
-            only_server: Whether to only start the server without running tests
         """
-        # Determine what to use - branches take precedence
-        self.use_base = base
-        self.use_test = test
-        self.use_golden = golden
         self.test_files = test_files or []
-        self.only_server = only_server
         self.grade_working_dir = "/tmp/grading_workspace_" + str(uuid.uuid4())
         self.original_repo_path = os.environ.get("REPO_PATH", f"/home/ubuntu/{os.environ.get('FOLDER_NAME')}")
 
@@ -82,10 +77,8 @@ class GradingRunner:
         )
         logger.info(f"Using patches for problem '{self.problem_id}' from {patches_base_dir}")
         
-        # Store references to server process and threads for cleanup
+        # Store reference to server process for cleanup
         self.server_process = None
-        self.server_threads = []
-        self.stop_threads = threading.Event()
 
 
     def _format_junit_xml(self, test_name: str, message: str, stdout: str, stderr: str) -> str:

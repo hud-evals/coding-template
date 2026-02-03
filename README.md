@@ -93,7 +93,7 @@ async def solve_task(problem_id: str, hints_enabled: bool = False):
 ### Tasks (in `tasks/*.py`)
 
 ```python
-from grading import problem, Grade, EnvironmentState, AgentPatchGrader
+from grading import problem, Grade, AgentPatchGrader
 
 @problem(
     id="fix-bug",
@@ -101,9 +101,9 @@ from grading import problem, Grade, EnvironmentState, AgentPatchGrader
     difficulty="easy",
     base="main", test="test-branch", golden="golden-branch",
 )
-def fix_bug(state: EnvironmentState) -> Grade:
+def fix_bug() -> Grade:
     return Grade.from_subscores([
-        AgentPatchGrader.grade(state, weight=1.0, ...)
+        AgentPatchGrader.grade(weight=1.0, ...)
     ])
 ```
 
