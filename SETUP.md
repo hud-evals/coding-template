@@ -2,7 +2,19 @@
 
 This walkthrough will get you set up running a sample task from our [source repo](https://github.com/hud-evals/coding-template-sample), which asks the agent to fix a small bug in an HTTP server. This template is meant for tasks that ask the agent to make modifications to code in a live shell environment, after which a set of hidden unit tests or integration tests will be run to verify task completion. At the end of this walkthrough, you'll be able to see Claude Sonnet 4.5 solve one such task in real time via HUD's user interface.
 
-## 1. Deploy to Platform
+## Local
+
+These instructions are for running tasks locally. The telemetry from your runs will be uploaded to HUD's platform.
+
+## 1. Clone coding-template and coding-template-sample
+
+1. Clone this template repository on GitHub as well as the [sample](https://github.com/hud-evals/coding-template-sample)
+
+## Remote
+
+These instructions are for running remote jobs. You only have access to these if you are a HUD enterprise customer: contact founders@hud.ai to learn more.
+
+### 1. Deploy to Platform
 
 If you haven't already, clone this template and connect the repo to hud.ai:
 
@@ -15,19 +27,19 @@ If you haven't already, clone this template and connect the repo to hud.ai:
 Once deployed, your environment is accessible by its slug (e.g., `my-org/coding`).
 
 
-## 2. Create a new taskset and add your first task
+### 2. Create a new taskset and add your first task
 
 1. Go to **Tasksets** → **New Taskset** and create a new taskset
 2. Go to your environment and enter `sample_json_bug` as the `problem_id`. You'll see that this corresponds to the single existing task in `coding-template/tasks/basic.py`.
 3. Click on "Create Task" and add this to your taskset.
 
-## 3. Run your first task
+### 3. Run your first task
 
 1. Go to your taskset. Under "Tasks", you should be able to see your `sample_json_bug` task.
 2. Click on "Run Taskset". Click on "Claude Sonnet 4.5" and set the "Max Steps" to 20 and "Group Size" to 5.
 3. Click on "Run [N] Tasks", which should open the page for the job you've just launched.
 
-## 4. Create your own tasks
+### 4. Create your own tasks
 
 You can create your own tasks by adding new items in `basic.py` using the template we use for the starter task.
 - To create new tasks, you'll need a `baseline` and `test` branch in your own source repo. You may also want to maintain a `golden` branch to verify that your tests are correct.

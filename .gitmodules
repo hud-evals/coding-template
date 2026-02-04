@@ -1,0 +1,3 @@
+[submodule "coding-template-sample"]
+	path = coding-template-sample
+	url = https://github.com/hud-evals/coding-template-sample
