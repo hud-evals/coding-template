@@ -52,6 +52,44 @@ async def test_scenario():
             await agent.run(ctx, max_steps=20)
 
 
+async def validate_golden(
+    base: str = "server_fix_baseline",
+    test: str = "server_fix_test",
+    golden: str = "server_fix_golden",
+    test_files: list[str] = ["test_server.py"],
+):
+    """Dry run: verify golden branch passes tests.
+    
+    This validates your task setup by:
+    1. Checking out golden branch (the solution)
+    2. Running test files
+    3. Reporting pass/fail
+    """
+    print(f"\n=== Validate Golden Branch: {golden} ===")
+    
+    async with env:
+        # Checkout golden branch
+        print(f"Checking out: {golden}")
+        result = await env.call_tool("bash", command=f"cd /home/ubuntu/project && git checkout origin/{golden}")
+        print(f"Checkout: {result[:200] if len(result) > 200 else result}")
+        
+        # Run tests
+        test_cmd = f"cd /home/ubuntu/project && python -m pytest {' '.join(test_files)} -v"
+        print(f"Running: {test_cmd}")
+        result = await env.call_tool("bash", command=test_cmd)
+        print(result)
+        
+        # Check result
+        if "passed" in result.lower() and "failed" not in result.lower():
+            print("\n✅ Golden branch PASSES tests")
+        else:
+            print("\n❌ Golden branch FAILS tests - check your setup!")
+        
+        # Reset to baseline
+        await env.call_tool("bash", command=f"cd /home/ubuntu/project && git checkout origin/{base}")
+        print(f"Reset to baseline: {base}")
+
+
 async def main():
     print("Coding Environment - Local Test")
     print("=" * 50)
@@ -63,6 +101,9 @@ async def main():
 
     await test_tools_standalone()
 
+    # Uncomment to validate golden branch passes tests:
+    # await validate_golden()
+    
     # Uncomment to run scenario with agent:
     # await test_scenario()
 
