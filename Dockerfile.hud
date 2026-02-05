@@ -82,7 +82,8 @@ RUN --mount=type=bind,source=.,target=/ctx \
         cp -r /ctx/${PROJECT_SUBMODULE}/. /home/ubuntu/${FOLDER_NAME}/ && \
         rm -f /home/ubuntu/${FOLDER_NAME}/.git && \
         cp -r /ctx/.git/modules/${PROJECT_SUBMODULE}/. /home/ubuntu/${FOLDER_NAME}/.git/ && \
-        cd /home/ubuntu/${FOLDER_NAME} && git config --unset core.worktree || true; \
+        cd /home/ubuntu/${FOLDER_NAME} && \
+        sed -i '/worktree = /d' .git/config; \
     fi && \
     chown -R ubuntu:ubuntu /home/ubuntu/${FOLDER_NAME}
 
