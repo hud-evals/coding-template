@@ -8,7 +8,7 @@ from grading import AgentPatchGrader, Grade
 
 
 @env.scenario("sample-json-bug")
-async def sample_json_bug(hints_enabled: bool = False):
+async def sample_json_bug(hints_enabled: bool = False, validate_golden: bool = False):
     """Fix the JSON serialization bug in server.py."""
     
     setup_task(
@@ -16,6 +16,7 @@ async def sample_json_bug(hints_enabled: bool = False):
         base="server_fix_baseline",
         test="server_fix_test",
         golden="server_fix_golden",
+        validate_golden=validate_golden,
     )
     
     prompt = make_prompt("""Fix the JSON serialization bug in server.py.
@@ -27,14 +28,13 @@ instead of proper JSON (e.g., single quotes instead of double quotes).
     
     _ = yield prompt
     
-    # Grade using AgentPatchGrader directly
+    # Grade using AgentPatchGrader
     grade = Grade.from_subscores([
         AgentPatchGrader.grade(
             weight=1.0,
-            base="server_fix_baseline",
-            test="server_fix_test",
-            golden="server_fix_golden",
+            problem_id="sample_json_bug",
             test_files=["test_server.py"],
+            # Uses default pytest command
         )
     ])
     
@@ -62,10 +62,12 @@ instead of proper JSON (e.g., single quotes instead of double quotes).
 #     grade = Grade.from_subscores([
 #         AgentPatchGrader.grade(
 #             weight=1.0,
-#             base="my_task_baseline",
-#             test="my_task_test",
-#             golden="my_task_golden",
+#             problem_id="my_task",
 #             test_files=["test_foo.py"],
+#             # For custom test frameworks:
+#             # test_command="yarn test {test_files}",
+#             # results_xml="jest_results.xml",
+#             # build_command="yarn build",
 #         )
 #     ])
 #     yield grade.score

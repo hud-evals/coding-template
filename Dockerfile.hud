@@ -60,7 +60,7 @@ RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | b
 # NOTE: hud deploy REQUIRES REPO_URL (submodule mode only works locally)
 
 ARG PROJECT_SUBMODULE="coding-template-sample"
-ARG REPO_URL=""
+ARG REPO_URL="https://github.com/hud-evals/coding-template-sample"
 ARG FOLDER_NAME="project"
 
 ENV FOLDER_NAME=${FOLDER_NAME}
@@ -96,8 +96,8 @@ WORKDIR /home/ubuntu/${FOLDER_NAME}
 # The agent cannot access git history or checkout solution branches
 USER root
 RUN mkdir -p /home/root/patches && \
-    chown -R root:root /home/ubuntu/${FOLDER_NAME}/.git && \
-    chmod -R 700 /home/ubuntu/${FOLDER_NAME}/.git && \
+    # chown -R root:root /home/ubuntu/${FOLDER_NAME}/.git && \
+    # chmod -R 700 /home/ubuntu/${FOLDER_NAME}/.git && \
     git config --global --add safe.directory /home/ubuntu/${FOLDER_NAME}
 USER ubuntu
 
@@ -150,34 +150,7 @@ USER ubuntu
 #   Rust: cargo fetch
 #   C++: (usually handled by build system)
 
-# 4) Configure test framework for JUnit XML output
-# The grading system requires JUnit XML format for test results.
-# Configure your test framework to output JUnit XML.
-#
-# === FOR JEST (Node.js) ===
-# RUN cd /home/ubuntu/${FOLDER_NAME} && \
-#     yarn add jest-junit && \
-#     jq '.reporters = ["default", ["jest-junit", {"outputDirectory": "./", "outputName": "jest_results.xml"}]]' .jestconfig.json > .jestconfig.tmp && \
-#     mv .jestconfig.tmp .jestconfig.json
-#
-# === FOR PYTEST (Python) ===
-# RUN pip install pytest-junit && \
-#     echo "[tool.pytest.ini_options]" >> pyproject.toml && \
-#     echo "junit_family = 'xunit2'" >> pyproject.toml
-#
-# === FOR JUNIT (Java) ===
-# Add to pom.xml or build.gradle:
-#   <plugin>
-#     <artifactId>maven-surefire-plugin</artifactId>
-#     <configuration>
-#       <reportsDirectory>./junit-results</reportsDirectory>
-#     </configuration>
-#   </plugin>
-#
-# === FOR GTEST (C++) ===
-# Use gtest_junit_output: --gtest_output=xml:test_results.xml
-
-# 5) Build the project
+# 4) Build the project (optional)
 # RUN cd /home/ubuntu/${FOLDER_NAME} && [BUILD_COMMAND]
 # Examples:
 #   Node.js: yarn build  or  npm run build

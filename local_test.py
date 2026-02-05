@@ -12,17 +12,24 @@ import os
 
 import hud
 from hud import Environment
-from hud.agents import OpenAIChatAgent
+from hud.agents.claude import ClaudeAgent
 from hud.settings import settings
 from openai import AsyncOpenAI
+
+# Create a clean Environment for client-side use.
+# IMPORTANT: Do NOT import env from env.py here. Importing env.py registers
+# @env.tool() bash/editor as LOCAL tools, which makes the router call them
+# in-process (where _bash_tool is None) instead of routing to the container.
+# With a fresh Environment, all tool calls route to the remote container.
+env = Environment("coding")
 
 # Use HUD inference gateway
 client = AsyncOpenAI(base_url="https://inference.hud.ai", api_key=settings.api_key)
 
 # Connect to running container
 DEV_URL = os.getenv("HUD_DEV_URL", "http://localhost:8765/mcp")
-env = Environment("coding")
-env.connect_url(DEV_URL)
+#env.connect_url(DEV_URL)
+env.connect_image("coding-template")
 
 
 async def test_tools_standalone():
@@ -48,8 +55,53 @@ async def test_scenario():
         task = env("sample-json-bug")
 
         async with hud.eval(task, trace=True) as ctx:
-            agent = OpenAIChatAgent.create(model="gpt-4o")
+            agent = ClaudeAgent.create(model="claude-sonnet-4-5")
             await agent.run(ctx, max_steps=20)
+
+
+async def validate_golden(
+    base: str = "server_fix_baseline",
+    test: str = "server_fix_test",
+    golden: str = "server_fix_golden",
+    test_files: list[str] = ["test_server.py"],
+):
+    """Dry run: verify golden branch passes tests.
+    
+    This validates your task setup by:
+    1. Checking out golden branch (the solution)
+    2. Running test files
+    3. Reporting pass/fail
+    """
+    print(f"\n=== Validate Golden Branch: {golden} ===")
+    
+    async with env:
+        # Checkout golden branch
+        print(f"Checking out: {golden}")
+        # result = await env.call_tool("bash", command=f"cd /home/ubuntu/project && git checkout origin/{golden}")
+        result = await env.call_tool("bash", command="cd /home/ubuntu/project && pwd && git status")
+        print(result.model_dump_json(indent=2))
+
+        result = await env.call_tool("bash", command="cat /etc/os-release")
+        print(result.model_dump_json(indent=2))
+
+        print(f"Checkout result: {result}")
+        
+        # Run tests
+        test_cmd = f"cd /home/ubuntu/project && python -m pytest {' '.join(test_files)} -v"
+        print(f"Running: {test_cmd}")
+        result = await env.call_tool("bash", command=test_cmd)
+        print(result)
+        from time import sleep
+        sleep(1000)
+        # Check result
+        if "passed" in result.lower() and "failed" not in result.lower():
+            print("\n✅ Golden branch PASSES tests")
+        else:
+            print("\n❌ Golden branch FAILS tests - check your setup!")
+        
+        # Reset to baseline
+        await env.call_tool("bash", command=f"cd /home/ubuntu/project && git checkout origin/{base}")
+        print(f"Reset to baseline: {base}")
 
 
 async def main():
@@ -63,8 +115,11 @@ async def main():
 
     await test_tools_standalone()
 
+    # Uncomment to validate golden branch passes tests:
+    # await validate_golden()
+    
     # Uncomment to run scenario with agent:
-    # await test_scenario()
+    await test_scenario()
 
 
 if __name__ == "__main__":

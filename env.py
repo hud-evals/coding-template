@@ -144,7 +144,7 @@ async def editor(
 # ============================================================================
 
 
-def setup_task(task_id: str, base: str, test: str, golden: str) -> None:
+def setup_task(task_id: str, base: str, test: str, golden: str, validate_golden: bool = False) -> None:
     """Set up environment for a task: checkout baseline, generate patches.
 
     Args:

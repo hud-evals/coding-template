@@ -12,6 +12,7 @@ These instructions are for running tasks locally. The telemetry from your runs w
 git clone https://github.com/hud-evals/coding-template
 cd coding-template
 git submodule update --init
+uv sync
 ```
 
 ### 2. Build and Run
@@ -19,6 +20,9 @@ git submodule update --init
 ```bash
 hud build .
 hud dev --port 8765
+```
+In a seperate terminal:
+```
 python local_test.py
 ```
 

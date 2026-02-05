@@ -21,45 +21,6 @@ python local_test.py
 
 Edit tasks or grading code, save, re-run `local_test.py`. No rebuild needed.
 
-## Creating a Task
-
-Add to `tasks/basic.py`:
-
-```python
-@env.scenario("my-task")
-async def my_task(hints_enabled: bool = False):
-    """Task description."""
-    
-    setup_task(
-        task_id="my_task",
-        base="my_task_baseline",
-        test="my_task_test",
-        golden="my_task_golden",
-    )
-    
-    prompt = make_prompt("Fix the bug in foo.py...")
-    
-    _ = yield prompt
-    
-    grade = Grade.from_subscores([
-        AgentPatchGrader.grade(
-            weight=1.0,
-            base="my_task_baseline",
-            test="my_task_test",
-            golden="my_task_golden",
-            test_files=["test_foo.py"],
-        )
-    ])
-    
-    yield grade.score
-```
-
-Then test with:
-```python
-# In local_test.py
-task = env("my-task")
-```
-
 ## Run Agent Evaluation
 
 ```bash
