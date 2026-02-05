@@ -291,41 +291,26 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 RUN cd /home/ubuntu/${FOLDER_NAME} && cargo fetch
 ```
 
-### 3. Configure Test Framework
+### 3. Configure Test Command
 
-The grading system requires JUnit XML output. Configure your test framework:
+The grading system runs your test command and checks the exit code (0 = pass).
 
-**pytest:**
+Set your test command in `tasks/*.py`:
+
 ```python
-# In grading/runner.py
-def run_pytest_tests(self) -> str:
-    result = subprocess.run(
-        ["pytest", "--junit-xml=pytest_results.xml"] + self.test_files,
-        cwd=self.grade_working_dir, capture_output=True, text=True,
-    )
-    return Path(self.grade_working_dir, "pytest_results.xml").read_text()
+AgentPatchGrader.grade(
+    weight=1.0,
+    problem_id="my_task",
+    test_files=["test_foo.py"],
+    test_command="pytest {test_files}",  # Or: yarn test, go test, etc.
+)
 ```
 
-**Go test:**
-```python
-def run_go_tests(self) -> str:
-    result = subprocess.run(
-        ["go", "test", "-v", "./...", "-json"],
-        cwd=self.grade_working_dir, capture_output=True, text=True,
-    )
-    return self._convert_go_json_to_junit(result.stdout)
-```
+### 4. Database Configuration (optional)
 
-### 4. Database Configuration
+If your tests need a database, set it up in the test command or Dockerfile.
 
-Adapt or remove database setup in `grading/runner.py`:
-
-**No database:**
-```python
-# Comment out database reset steps in run_grading()
-```
-
-**MySQL:**
+**Example:**
 ```python
 drop_cmd = f"mysql -u root -p{password} -e 'DROP DATABASE IF EXISTS {db_name}'"
 create_cmd = f"mysql -u root -p{password} -e 'CREATE DATABASE {db_name}'"

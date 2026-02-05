@@ -166,64 +166,47 @@ COPY ./tasks /mcp_server/tasks
 
 ## Customizing the Testing Flow
 
-### Using different test runners
+### Grading workflow
 
-Edit `grading/runner.py` to add support for your test framework:
+`grade()` does:
+1. Copy repo, apply test.patch
+2. Call `run_tests()` *(customize this)*
+3. Return score (1.0 or 0.0)
 
-```python
-# In GradingRunner.run_tests()
-def run_tests(self, test_files: list[str]) -> tuple[bool, dict]:
-    # Run your test command
-    result = subprocess.run(
-        ["pytest", "--junitxml=results.xml"] + test_files,
-        capture_output=True
-    )
-    
-    # Parse JUnit XML results
-    return self.parse_junit_results("results.xml")
-```
-
-### Custom graders
-
-Create new graders in `grading/graders.py`:
+### Simple: Configure the test command
 
 ```python
-class MyCustomGrader(Grader):
-    name = "MyCustomGrader"
-    
-    @classmethod
-    def compute_score(cls, **kwargs) -> tuple[float, dict]:
-        # Your grading logic
-        # Return (score, metadata)
-        return (1.0, {"passed": True})
+AgentPatchGrader.grade(
+    weight=1.0,
+    problem_id="my_task",
+    test_files=["test_foo.py"],
+    test_command="pytest {test_files}",  # Or: yarn test, go test, make test
+)
 ```
 
-Use in tasks:
+### Advanced: Custom test logic
+
+Override `run_tests()` for complex scenarios:
 
 ```python
-grade = Grade.from_subscores([
-    MyCustomGrader.grade(weight=0.5, some_param="value"),
-    AgentPatchGrader.grade(weight=0.5, ...),
-])
-```
+from grading import GradingRunner
 
-### JUnit XML requirement
-
-The grading system expects JUnit XML format. Configure your test framework:
-
-**pytest:**
-```bash
-pytest --junitxml=results.xml
-```
-
-**Jest:**
-```bash
-jest --reporters=jest-junit
-```
-
-**Go:**
-```bash
-go test -v 2>&1 | go-junit-report > results.xml
+class MyRunner(GradingRunner):
+    def run_tests(self) -> tuple[bool, dict]:
+        # Build first
+        subprocess.run(["yarn", "build"], cwd=self.working_dir, check=True)
+        
+        # Start server
+        server = subprocess.Popen(["yarn", "start"], cwd=self.working_dir)
+        time.sleep(5)
+        
+        # Run tests
+        result = subprocess.run(["yarn", "test"], cwd=self.working_dir)
+        
+        # Cleanup
+        server.terminate()
+        
+        return result.returncode == 0, {}
 ```
 
 ---
