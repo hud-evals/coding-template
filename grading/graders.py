@@ -3,7 +3,7 @@ import os
 from typing import Any, Dict, Literal, Tuple, Union
 
 from .runner import GradingRunner
-from .spec import EnvironmentState, Grader
+from .spec import Grader
 
 
 class DefaultTestCasesPassingGrader(Grader):
@@ -14,7 +14,7 @@ class DefaultTestCasesPassingGrader(Grader):
     name = "DefaultTestCasesPassingGrader"
 
     @classmethod
-    def compute_score(cls, state: EnvironmentState) -> float:
+    def compute_score(cls) -> float:
         """
         Compute a score based on whether the test cases are passing.
         """
@@ -36,7 +36,6 @@ class AgentPatchGrader(Grader):
     @classmethod
     def compute_score(
         cls,
-        state: EnvironmentState,
         base: str,
         test: str,
         golden: str,
@@ -49,7 +48,6 @@ class AgentPatchGrader(Grader):
         Compute a score based on whether the agent patch fixes the issue.
 
         Args:
-            state: The current environment state
             base: The baseline branch/commit name (for metadata)
             test: The test branch/commit name (for metadata)
             golden: The golden branch/commit name (for metadata)
@@ -91,13 +89,12 @@ class CodeFileGrader(Grader):
 
     @classmethod
     def compute_score(
-        cls, state: EnvironmentState, filename: str, content_check: str | None = None, table_name: str = "code_files"
+        cls, filename: str, content_check: str | None = None, table_name: str = "code_files"
     ) -> float:
         """
         Compute a score based on whether a code file exists and optionally contains specific content.
 
         Args:
-            state: The current environment state
             filename: The name of the file to check
             content_check: Optional substring to check in file content
             table_name: The database table to query (ignored as database is disabled)
@@ -121,13 +118,12 @@ class FileSystemGrader(Grader):
 
     @classmethod
     def compute_score(
-        cls, state: EnvironmentState, file_path: str, content_check: str | None = None
+        cls, file_path: str, content_check: str | None = None
     ) -> Union[float, Tuple[float, Dict[str, Any]]]:
         """
         Compute a score based on whether a file exists and optionally contains specific content.
 
         Args:
-            state: The current environment state
             file_path: Path to the file to check
             content_check: Optional string to check for in the file content
 
@@ -174,13 +170,12 @@ class DirectoryGrader(Grader):
 
     @classmethod
     def compute_score(
-        cls, state: EnvironmentState, dir_path: str, file_count: int | None = None, file_pattern: str | None = None
+        cls, dir_path: str, file_count: int | None = None, file_pattern: str | None = None
     ) -> float:
         """
         Compute a score based on whether a directory exists and optionally has specific contents.
 
         Args:
-            state: The current environment state
             dir_path: The path to the directory to check
             file_count: Optional minimum number of files required
             file_pattern: Optional pattern to match files (e.g., "*.py")

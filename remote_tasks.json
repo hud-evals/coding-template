@@ -3,9 +3,7 @@
     "env": {
       "name": "coding-template"
     },
-    "scenario": "coding:solve-task",
-    "args": {
-      "problem_id": "sample_json_bug"
-    }
+    "scenario": "coding:sample-json-bug",
+    "args": {}
   }
 ]

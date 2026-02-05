@@ -1,27 +1,11 @@
 """Task definitions for coding environment.
 
-Tasks are registered via the @problem decorator when imported.
+Tasks are scenarios registered via @env.scenario when imported.
 """
-import importlib
-import pkgutil
 
-from grading import PROBLEM_REGISTRY
+# Import task modules to register their scenarios
+from . import basic  # noqa: F401
 
-
-def import_submodules(module):
-    """Import all submodules of a module, recursively."""
-    for _loader, module_name, _is_pkg in pkgutil.walk_packages(
-        module.__path__, module.__name__ + "."
-    ):
-        importlib.import_module(module_name)
-
-
-def load_all_tasks():
-    """Load all task modules to register problems."""
-    from . import basic, hard, medium  # noqa: F401
-
-
-# Load all tasks on import
-load_all_tasks()
-
-__all__ = ["PROBLEM_REGISTRY", "load_all_tasks"]
+# Add more task modules here as needed:
+# from . import medium  # noqa: F401
+# from . import hard  # noqa: F401

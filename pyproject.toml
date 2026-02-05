@@ -19,8 +19,6 @@ dev = ["pytest>=8.0.0", "ruff==0.11.2", "pre-commit>=3.5.0"]
 
 [project.scripts]
 hud_eval = "cli:main"
-setup_problem = "cli:setup_problem_script"
-grade_problem = "cli:grade_problem_script"
 
 [build-system]
 requires = ["hatchling"]

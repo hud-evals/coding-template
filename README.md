@@ -93,28 +93,43 @@ async def solve_task(problem_id: str, hints_enabled: bool = False):
 ### Tasks (in `tasks/*.py`)
 
 ```python
-from grading import problem, Grade, EnvironmentState, AgentPatchGrader
+from env import env, setup_task, make_prompt
+from grading import AgentPatchGrader, Grade
 
-@problem(
-    id="fix-bug",
-    description="Fix the login bug in auth.py",
-    difficulty="easy",
-    base="main", test="test-branch", golden="golden-branch",
-)
-def fix_bug(state: EnvironmentState) -> Grade:
-    return Grade.from_subscores([
-        AgentPatchGrader.grade(state, weight=1.0, ...)
+@env.scenario("fix-bug")
+async def fix_bug(hints_enabled: bool = False):
+    """Fix the login bug in auth.py."""
+    
+    setup_task(
+        task_id="fix_bug",
+        base="fix_bug_baseline",
+        test="fix_bug_test",
+        golden="fix_bug_golden",
+    )
+    
+    prompt = make_prompt("Fix the login bug in auth.py...")
+    _ = yield prompt
+    
+    grade = Grade.from_subscores([
+        AgentPatchGrader.grade(
+            weight=1.0,
+            base="fix_bug_baseline",
+            test="fix_bug_test",
+            golden="fix_bug_golden",
+            test_files=["test_auth.py"],
+        )
     ])
+    yield grade.score
 ```
 
 ## 3. Create Tasks from Scenarios
 
-Tasks are scenario instances with specific arguments.
+Tasks are scenario instances.
 
 **In Code:**
 
 ```python
-task = env("solve-task", problem_id="fix-bug")
+task = env("fix-bug")
 ```
 
 **From JSON (`remote_tasks.json`):**
