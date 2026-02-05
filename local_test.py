@@ -11,17 +11,17 @@ import asyncio
 import os
 
 import hud
+from hud import Environment
 from hud.agents import OpenAIChatAgent
 from hud.settings import settings
 from openai import AsyncOpenAI
-
-from env import env
 
 # Use HUD inference gateway
 client = AsyncOpenAI(base_url="https://inference.hud.ai", api_key=settings.api_key)
 
 # Connect to running container
 DEV_URL = os.getenv("HUD_DEV_URL", "http://localhost:8765/mcp")
+env = Environment("coding")
 env.connect_url(DEV_URL)
 
 
