@@ -27,6 +27,13 @@ from .utils import merge_junits
 
 logger = logging.getLogger(__name__)
 
+
+def _is_sample_repo() -> bool:
+    """Check if we're using the sample repo (for conditional test/build commands)."""
+    repo_url = os.environ.get("REPO_URL", "")
+    # Sample if: REPO_URL is empty/unset, or explicitly set to sample URL
+    return not repo_url or repo_url == SAMPLE_REPO_URL
+
 class GradingRunner:
     """Handles the grading workflow for agent patch testing."""
 
@@ -136,7 +143,7 @@ class GradingRunner:
         logger.info(f"Running tests in {self.grade_working_dir}")
 
         # [CUSTOMIZE] Remove this conditional block when customizing
-        if os.environ.get("REPO_URL") == SAMPLE_REPO_URL:
+        if _is_sample_repo():
             xml_file = "pytest_results.xml"
             # Use full path to pytest from the virtualenv
             test_command = f"uv run pytest --junit-xml={xml_file} {' '.join(self.test_files)}"
@@ -213,7 +220,7 @@ class GradingRunner:
     def _needs_server_start(self) -> bool:
         """Check if current version needs server to be started for tests."""
         # [CUSTOMIZE] Remove this conditional block when customizing
-        if os.environ.get("REPO_URL") == SAMPLE_REPO_URL:
+        if _is_sample_repo():
             return False  # Sample repo tests don't need a server
 
         try:
@@ -265,7 +272,7 @@ class GradingRunner:
         #   C++: "cd build && cmake .. && make"
 
         # [CUSTOMIZE] Remove this conditional block when customizing
-        if os.environ.get("REPO_URL") == SAMPLE_REPO_URL:
+        if _is_sample_repo():
             build_command = "true"  # No build needed for sample Python repo
         else:
             build_command = "[BUILD_COMMAND]"
@@ -337,7 +344,7 @@ class GradingRunner:
         #   Prisma: "npx prisma migrate deploy"
 
         # [CUSTOMIZE] Remove this conditional block when customizing
-        if os.environ.get("REPO_URL") == SAMPLE_REPO_URL:
+        if _is_sample_repo():
             migrate_cmd = None  # No database for sample Python repo
         else:
             migrate_cmd = "[MIGRATION_COMMAND]"  # Or None if no migrations

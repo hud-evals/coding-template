@@ -1,17 +1,13 @@
 # HUD CLI Usage
 
-## First Time Setup
+## First Time Setup (Local)
 
 ```bash
-hud build . --build-arg REPO_URL=https://github.com/your-org/your-repo
+git submodule update --init
+hud build .
 ```
 
-For private repos:
-```bash
-export CODING_GITHUB_TOKEN=github_pat_XXX
-hud build . --build-arg REPO_URL=https://github.com/your-org/your-repo \
-            --secret id=CODING_GITHUB_TOKEN,env=CODING_GITHUB_TOKEN
-```
+Or with URL: `hud build . --build-arg REPO_URL=https://github.com/...`
 
 ## Local Development
 
@@ -45,12 +41,15 @@ async def my_task(hints_enabled: bool = False):
     
     _ = yield prompt
     
-    grade = grade_task(
-        base="my_task_baseline",
-        test="my_task_test",
-        golden="my_task_golden",
-        test_files=["test_foo.py"],
-    )
+    grade = Grade.from_subscores([
+        AgentPatchGrader.grade(
+            weight=1.0,
+            base="my_task_baseline",
+            test="my_task_test",
+            golden="my_task_golden",
+            test_files=["test_foo.py"],
+        )
+    ])
     
     yield grade.score
 ```
@@ -76,6 +75,23 @@ hud eval remote_tasks.json claude --full --remote
 
 ## Deploy to HUD Platform
 
+Deploy **requires** `REPO_URL` (submodule only works locally):
+
 ```bash
-hud deploy
+hud deploy . --build-arg REPO_URL=https://github.com/your-org/your-repo
+
+# With runtime env vars
+hud deploy . --build-arg REPO_URL=... -e API_KEY=xxx
+
+# Private repos
+hud deploy . --build-arg REPO_URL=... --secret id=CODING_GITHUB_TOKEN,env=CODING_GITHUB_TOKEN
 ```
+
+### Secrets vs Env Vars
+
+| Type | When | Example |
+|------|------|---------|
+| `--secret` | Docker build time (encrypted) | `CODING_GITHUB_TOKEN` |
+| `-e` / `--env` | Container runtime | `API_KEY`, `DEBUG` |
+
+After first deploy, subsequent `hud deploy` rebuilds the same environment (linked via `.hud/deploy.json`).

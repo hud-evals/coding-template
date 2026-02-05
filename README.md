@@ -6,41 +6,50 @@ A coding environment for agent evaluations. Provides bash and file editing tools
 
 ## Quick Start (Sample Repo)
 
-To test the template with the sample repository:
+To test the template with the included sample submodule:
 
 ```bash
-hud build . --build-arg REPO_URL=https://github.com/hud-evals/coding-template-sample
+git submodule update --init  # Ensure submodule is populated
+hud build .
 hud dev --port 8765
 python local_test.py
 ```
 
 ## Template Setup
 
-The Dockerfile uses two build arguments:
+### Local Development (`hud build`)
 
-| Argument | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `REPO_URL` | **Yes** | *(none)* | Git repository URL to clone |
-| `FOLDER_NAME` | No | `project` | Folder name for the cloned repo |
-
-```dockerfile
-# Required: Pass REPO_URL as a build argument
-ARG REPO_URL
-ARG FOLDER_NAME="project"
-
-# The repo is cloned to /home/ubuntu/${FOLDER_NAME}
-WORKDIR /home/ubuntu/${FOLDER_NAME}
-```
-
-For private repos, set `CODING_GITHUB_TOKEN` locally before building:
-
+**Submodule mode (offline, default):**
 ```bash
-export CODING_GITHUB_TOKEN=github_pat_XXX
-hud build . --build-arg REPO_URL=https://github.com/your-org/your-repo \
-            --secret id=CODING_GITHUB_TOKEN,env=CODING_GITHUB_TOKEN
+git submodule update --init
+hud build .
 ```
 
-Every task in `tasks/*.py` follows the **3-branch pattern**, where each branch exists in the source repo cloned in the Dockerfile:
+**URL mode:**
+```bash
+hud build . --build-arg REPO_URL=https://github.com/your-org/your-repo
+```
+
+### Deploy (`hud deploy`)
+
+Deploy **requires** `REPO_URL` (submodule mode only works locally):
+```bash
+hud deploy . --build-arg REPO_URL=https://github.com/your-org/your-repo
+```
+
+For private repos, add: `--secret id=CODING_GITHUB_TOKEN,env=CODING_GITHUB_TOKEN`
+
+### Build Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `PROJECT_SUBMODULE` | `coding-template-sample` | Submodule to use (local only) |
+| `REPO_URL` | *(empty)* | Clone from URL (required for deploy) |
+| `FOLDER_NAME` | `project` | Destination folder in container |
+
+### 3-Branch Pattern
+
+Every task in `tasks/*.py` follows the **3-branch pattern**, where each branch exists in the target repo:
 | Branch | Purpose |
 |--------|---------|
 | `baseline` | Starting state the agent sees, where the agent makes changes |
@@ -49,7 +58,7 @@ Every task in `tasks/*.py` follows the **3-branch pattern**, where each branch e
 
 Git patches will automatically be generated for every branch defined in each task.
 
-If you're **not using git-based problems**, comment out the git clone section in `Dockerfile.hud` (lines ~63-87).
+If you're **not using git-based problems**, comment out the git setup section in `Dockerfile.hud`.
 
 ## 1. Deploy to Platform
 
@@ -198,11 +207,8 @@ This environment requires Docker. Use `hud dev` with hot-reload:
 
 ```bash
 # 1. Build the Docker image (first time only)
-hud build . --build-arg REPO_URL=https://github.com/your-org/your-repo
-
-# For private repos, also pass the secret:
-hud build . --build-arg REPO_URL=https://github.com/your-org/your-repo \
-            --secret id=CODING_GITHUB_TOKEN,env=CODING_GITHUB_TOKEN
+git submodule update --init
+hud build .
 
 # 2. Start with hot-reload on tasks/grading
 hud dev -w tasks -w grading --port 8765

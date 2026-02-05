@@ -46,32 +46,45 @@ RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | b
 # Examples: Python (pip/poetry), Java (Maven/Gradle), C++ (CMake), Rust (Cargo)
 # =================================================================
 
-# 0) Clone or copy your project repository
-# Pass REPO_URL as a build arg:
+# 0) Set up your project repository
+#
+# LOCAL (hud build) - uses submodule, fully offline:
+#   hud build .
+#
+# LOCAL/DEPLOY with URL - clones from URL:
 #   hud build . --build-arg REPO_URL=https://github.com/your-org/your-repo
-# For private repos, also pass the secret (requires hud-python >= 0.5.13):
-#   hud build . --build-arg REPO_URL=https://github.com/your-org/your-repo \
-#               --secret id=CODING_GITHUB_TOKEN,env=CODING_GITHUB_TOKEN
-ARG REPO_URL
+#   hud deploy . --build-arg REPO_URL=https://github.com/your-org/your-repo
+#
+# For private repos, add: --secret id=CODING_GITHUB_TOKEN,env=CODING_GITHUB_TOKEN
+#
+# NOTE: hud deploy REQUIRES REPO_URL (submodule mode only works locally)
+
+ARG PROJECT_SUBMODULE="coding-template-sample"
+ARG REPO_URL=""
 ARG FOLDER_NAME="project"
 
-# Expose REPO_URL as an environment variable for conditionally enabling/disabling
-# code for compatibility with the sample repo. See comments marked with [CUSTOMIZE]
-#Remove if not needed.
-ENV REPO_URL=${REPO_URL}
 ENV FOLDER_NAME=${FOLDER_NAME}
+ENV REPO_URL=${REPO_URL}
 
-# Clone and fetch all branches (needed for runtime checkout of baseline/test/golden)
-# If CODING_GITHUB_TOKEN secret is provided, use it for private repos; otherwise clone public repo
-RUN --mount=type=secret,id=CODING_GITHUB_TOKEN,uid=1000 \
-    if [ -f /run/secrets/CODING_GITHUB_TOKEN ]; then \
-        CODING_GITHUB_TOKEN=$(cat /run/secrets/CODING_GITHUB_TOKEN) && \
-        git clone https://${CODING_GITHUB_TOKEN}@${REPO_URL#https://} /home/ubuntu/${FOLDER_NAME}; \
+# --- Setup project repo (submodule OR clone) ---
+RUN --mount=type=bind,source=.,target=/ctx \
+    --mount=type=secret,id=CODING_GITHUB_TOKEN,uid=1000 \
+    if [ -n "${REPO_URL}" ]; then \
+        # Clone from URL \
+        if [ -f /run/secrets/CODING_GITHUB_TOKEN ]; then \
+            CODING_GITHUB_TOKEN=$(cat /run/secrets/CODING_GITHUB_TOKEN) && \
+            git clone https://${CODING_GITHUB_TOKEN}@${REPO_URL#https://} /home/ubuntu/${FOLDER_NAME}; \
+        else \
+            git clone ${REPO_URL} /home/ubuntu/${FOLDER_NAME}; \
+        fi \
     else \
-        git clone ${REPO_URL} /home/ubuntu/${FOLDER_NAME}; \
+        # Copy from submodule (local only) \
+        cp -r /ctx/${PROJECT_SUBMODULE}/. /home/ubuntu/${FOLDER_NAME}/ && \
+        rm -f /home/ubuntu/${FOLDER_NAME}/.git && \
+        cp -r /ctx/.git/modules/${PROJECT_SUBMODULE}/. /home/ubuntu/${FOLDER_NAME}/.git/ && \
+        cd /home/ubuntu/${FOLDER_NAME} && git config --unset core.worktree || true; \
     fi && \
-    cd /home/ubuntu/${FOLDER_NAME} && \
-    git fetch --all
+    chown -R ubuntu:ubuntu /home/ubuntu/${FOLDER_NAME}
 
 WORKDIR /home/ubuntu/${FOLDER_NAME}
 
@@ -190,10 +203,9 @@ RUN pip install uv --break-system-packages
 
 # Copy the environment structure
 # env.py: tools + scenario registration
-# scenarios.py: shared helpers + scenario definitions (use call_tool)
+# tasks/: scenario definitions
 # For dev iteration: hud dev -w tasks -w grading --port 8765
 COPY ./env.py /mcp_server/env.py
-COPY ./scenarios.py /mcp_server/scenarios.py
 COPY ./tools /mcp_server/tools
 COPY ./grading /mcp_server/grading
 COPY ./tasks /mcp_server/tasks
