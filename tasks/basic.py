@@ -8,7 +8,7 @@ from grading import AgentPatchGrader, Grade
 
 
 @env.scenario("sample-json-bug")
-async def sample_json_bug(hints_enabled: bool = False):
+async def sample_json_bug(hints_enabled: bool = False, validate_golden: bool = False):
     """Fix the JSON serialization bug in server.py."""
     
     setup_task(
@@ -16,6 +16,7 @@ async def sample_json_bug(hints_enabled: bool = False):
         base="server_fix_baseline",
         test="server_fix_test",
         golden="server_fix_golden",
+        validate_golden=validate_golden,
     )
     
     prompt = make_prompt("""Fix the JSON serialization bug in server.py.

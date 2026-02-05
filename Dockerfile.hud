@@ -60,7 +60,7 @@ RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | b
 # NOTE: hud deploy REQUIRES REPO_URL (submodule mode only works locally)
 
 ARG PROJECT_SUBMODULE="coding-template-sample"
-ARG REPO_URL=""
+ARG REPO_URL="https://github.com/hud-evals/coding-template-sample"
 ARG FOLDER_NAME="project"
 
 ENV FOLDER_NAME=${FOLDER_NAME}
@@ -95,8 +95,8 @@ WORKDIR /home/ubuntu/${FOLDER_NAME}
 # The agent cannot access git history or checkout solution branches
 USER root
 RUN mkdir -p /home/root/patches && \
-    chown -R root:root /home/ubuntu/${FOLDER_NAME}/.git && \
-    chmod -R 700 /home/ubuntu/${FOLDER_NAME}/.git && \
+    # chown -R root:root /home/ubuntu/${FOLDER_NAME}/.git && \
+    # chmod -R 700 /home/ubuntu/${FOLDER_NAME}/.git && \
     git config --global --add safe.directory /home/ubuntu/${FOLDER_NAME}
 USER ubuntu
 
