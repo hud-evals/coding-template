@@ -77,8 +77,7 @@ async def validate_golden(
     async with env:
         # Checkout golden branch
         print(f"Checking out: {golden}")
-        # result = await env.call_tool("bash", command=f"cd /home/ubuntu/project && git checkout origin/{golden}")
-        result = await env.call_tool("bash", command="cd /home/ubuntu/project && pwd && git status")
+        result = await env.call_tool("bash", command=f"cd /home/ubuntu/project && git checkout origin/{golden}")
         print(result.model_dump_json(indent=2))
 
         result = await env.call_tool("bash", command="cat /etc/os-release")

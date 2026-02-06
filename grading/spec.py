@@ -2,12 +2,13 @@
 
 import logging
 from dataclasses import dataclass, field
-from typing import Annotated, Any, Dict, List, Tuple, Union
+from typing import Annotated, Any, Literal
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
+ValidateMode = Literal["baseline_fail", "golden_pass"]
 
 def validate_grader_name(name: str) -> str:
     """Validate a grader name."""
@@ -26,8 +27,8 @@ class SubGrade:
     name: GraderName
     score: float
     weight: float
-    parameters: Dict[str, Any] = field(default_factory=dict)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    parameters: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         validate_grader_name(self.name)
@@ -102,12 +103,12 @@ class Grader:
         return SubGrade(name=cls.name, score=score, weight=weight, parameters=kwargs, metadata=metadata)
 
     @classmethod
-    def compute_score(cls, **kwargs) -> Union[float, Tuple[float, Dict[str, Any]]]:
+    def compute_score(cls, **kwargs) -> float | tuple[float, dict[str, Any]]:
         """Compute a score between 0.0 and 1.0 based on the current state."""
         raise NotImplementedError("Subclasses must implement compute_score")
 
     @classmethod
-    def any(cls, weight: float, subgrades: List[SubGrade]) -> SubGrade:
+    def any(cls, weight: float, subgrades: list[SubGrade]) -> SubGrade:
         """Return a SubGrade that passes if any of the subgrades pass."""
         max_score = max(subgrade.score for subgrade in subgrades)
         combined_metadata = {
@@ -123,7 +124,7 @@ class Grader:
         )
 
     @classmethod
-    def all(cls, weight: float, subgrades: List[SubGrade]) -> SubGrade:
+    def all(cls, weight: float, subgrades: list[SubGrade]) -> SubGrade:
         """Return a SubGrade that passes only if all subgrades pass."""
         min_score = min(subgrade.score for subgrade in subgrades)
         combined_metadata = {

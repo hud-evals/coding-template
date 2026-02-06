@@ -4,11 +4,11 @@ Each task is a scenario that handles its own setup and grading.
 """
 
 from env import env, setup_task, make_prompt
-from grading import AgentPatchGrader, Grade
+from grading import AgentPatchGrader, Grade, ValidateMode
 
 
 @env.scenario("sample-json-bug")
-async def sample_json_bug(hints_enabled: bool = False, validate_golden: bool = False):
+async def sample_json_bug(hints_enabled: bool = False, validate_mode: ValidateMode | None = None):
     """Fix the JSON serialization bug in server.py."""
     
     setup_task(
@@ -16,7 +16,7 @@ async def sample_json_bug(hints_enabled: bool = False, validate_golden: bool = F
         base="server_fix_baseline",
         test="server_fix_test",
         golden="server_fix_golden",
-        validate_golden=validate_golden,
+        validate_mode=validate_mode,
     )
     
     prompt = make_prompt("""Fix the JSON serialization bug in server.py.
@@ -34,6 +34,7 @@ instead of proper JSON (e.g., single quotes instead of double quotes).
             weight=1.0,
             problem_id="sample_json_bug",
             test_files=["test_server.py"],
+            validate_mode=validate_mode,
             # Uses default pytest command
         )
     ])

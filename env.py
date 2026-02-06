@@ -14,6 +14,7 @@ from pathlib import Path
 
 from hud import Environment
 
+from grading import ValidateMode
 from tools import BashTool, EditTool, ToolError
 
 logger = logging.getLogger(__name__)
@@ -136,7 +137,7 @@ async def editor(
 # ============================================================================
 
 
-def setup_task(task_id: str, base: str, test: str, golden: str, validate_golden: bool = False) -> None:
+def setup_task(task_id: str, base: str, test: str, golden: str, validate_mode: ValidateMode | None = None) -> None:
     """Set up environment for a task: checkout baseline, generate patches.
     
     Args:
@@ -178,17 +179,23 @@ def setup_task(task_id: str, base: str, test: str, golden: str, validate_golden:
         f.write(result.stdout)
     
     # Checkout baseline branch
-    logger.info("Checking out baseline branch: %s", base)
+    if validate_mode == "golden_pass":
+        logger.info("Checking out golden branch (validation): %s", golden)
+        checkout_branch = golden
+    else:
+        checkout_branch = base
+        logger.info("Checking out baseline branch: %s", checkout_branch)
+
     result = subprocess.run(
-        ["git", "checkout", "-f", f"origin/{base}"],
+        ["git", "checkout", "-f", f"origin/{checkout_branch}"],
         cwd=project_dir,
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
-        logger.error("Failed to checkout baseline: %s", result.stderr)
+        logger.error("Failed to checkout %s: %s", checkout_branch, result.stderr)
     else:
-        logger.info("Checked out baseline branch: %s", base)
+        logger.info("Checked out baseline branch: %s", checkout_branch)
         # Restore file ownership to ubuntu
         subprocess.run(["chown", "-R", "ubuntu:ubuntu", project_dir], capture_output=True)
         # Keep .git protected

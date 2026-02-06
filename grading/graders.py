@@ -3,7 +3,7 @@
 import os
 
 from .runner import GradingRunner
-from .spec import Grader
+from .spec import Grader, ValidateMode
 
 
 class AgentPatchGrader(Grader):
@@ -35,6 +35,7 @@ class AgentPatchGrader(Grader):
         test_files: list[str],
         problem_id: str | None = None,
         test_command: str | None = None,
+        validate_mode: ValidateMode | None = None,
         **kwargs,
     ) -> tuple[float, dict]:
         """
@@ -59,4 +60,9 @@ class AgentPatchGrader(Grader):
         )
 
         score = runner.grade()
+
+        # when testing with baseline fail, we want to ensure that the baseline actually fails, so we invert the score
+        if validate_mode == "baseline_fail":
+            score = 1.0 if score == 0.0 else 0.0
+
         return (score, {})
