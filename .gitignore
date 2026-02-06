@@ -45,3 +45,4 @@ coverage/
 hud.lock.yaml
 .hud
 .hud_eval.toml
+problem-metadata.json

@@ -88,7 +88,7 @@ hud eval remote_tasks.json claude --full --remote
 
 ### Deploy (`hud deploy`)
 
-Deploy **requires** `REPO_URL` (submodule only works locally):
+Deploy requires `REPO_URL`:
 
 ```bash
 hud deploy . --build-arg REPO_URL=https://github.com/your-org/your-repo

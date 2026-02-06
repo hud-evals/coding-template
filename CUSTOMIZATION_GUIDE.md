@@ -16,10 +16,10 @@ Each task needs 3 branches:
 ```python
 # tasks/basic.py
 from env import env, setup_task, make_prompt
-from grading import AgentPatchGrader, Grade
+from grading import AgentPatchGrader, Grade, ValidateMode
 
 @env.scenario("my-task")
-async def my_task(hints_enabled: bool = False):
+async def my_task(hints_enabled: bool = False, validate_mode: ValidateMode | None = None):
     """Short description of the task."""
     
     # Set up git branches and patches
@@ -28,6 +28,7 @@ async def my_task(hints_enabled: bool = False):
         base="my_task_baseline",
         test="my_task_test",
         golden="my_task_golden",
+        validate_mode=validate_mode,
     )
     
     # Define the prompt shown to the agent
@@ -43,10 +44,9 @@ The function returns incorrect results when given negative numbers.
     grade = Grade.from_subscores([
         AgentPatchGrader.grade(
             weight=1.0,
-            base="my_task_baseline",
-            test="my_task_test",
-            golden="my_task_golden",
+            problem_id="my_task",
             test_files=["test_foo.py"],
+            validate_mode=validate_mode,
         )
     ])
     
@@ -159,19 +159,16 @@ RUN mvn dependency:resolve
 
 The build flow is defined in `Dockerfile.hud`. Key sections:
 
-### Project setup (lines 43-88)
+### Project setup
 
-Controls how the target repository is loaded:
-- **Local builds**: Copies from submodule
-- **Deploy builds**: Clones from `REPO_URL`
+Controls how the target repository is loaded. By default, it clones from `REPO_URL` at build time.
 
 ```dockerfile
-ARG PROJECT_SUBMODULE="coding-template-sample"  # Change default submodule
-ARG REPO_URL=""                                  # Or clone from URL
-ARG FOLDER_NAME="project"                        # Destination folder
+ARG REPO_URL="https://github.com/hud-evals/coding-template-sample"      # Clone from URL
+ARG FOLDER_NAME="project"                                                # Destination folder
 ```
 
-### Git protection (lines 91-101)
+### Git protection
 
 Protects `.git` from agent access so they can't peek at solutions:
 
@@ -182,7 +179,7 @@ RUN chown -R root:root /home/ubuntu/${FOLDER_NAME}/.git && \
 USER ubuntu
 ```
 
-### MCP server setup (lines 180+)
+### MCP server setup
 
 Installs the evaluation environment and tools:
 
@@ -196,14 +193,20 @@ COPY ./tasks /mcp_server/tasks
 
 ## Customizing the Testing Flow
 
-### Grading workflow
+### How the grading runner works
 
-`grade()` does:
-1. Copy repo, apply test.patch
-2. Call `run_tests()` *(customize this)*
-3. Return score (1.0 or 0.0)
+The default grading logic lives in `grading/runner.py`. The `GradingRunner.grade()` method does the following:
+
+1. **Copies the repo** to an isolated `/tmp/grading_<uuid>` directory so grading doesn't affect the agent's working copy.
+2. **Applies `test.patch`** via `git apply`. This patch (generated at runtime from `base` → `test` branch) adds hidden test files into the copy.
+3. **Calls `run_tests()`**, which formats and runs the `test_command` string (default: `uv run pytest {test_files}`) via `bash -lc` in the copied directory.
+4. **Returns 1.0** if the tests pass (exit code 0), **0.0** otherwise.
+
+The default `test_command` is `uv run pytest {test_files}`, where `{test_files}` is replaced with the space-joined list of test file names you pass to `AgentPatchGrader.grade()`.
 
 ### Simple: Configure the test command
+
+For many projects you only need to change the test command string:
 
 ```python
 AgentPatchGrader.grade(
@@ -216,28 +219,45 @@ AgentPatchGrader.grade(
 
 ### Advanced: Custom test logic
 
-Override `run_tests()` for complex scenarios:
+If you are switching to a different software project (e.g., TypeScript, Java, Rust), the default `run_tests()` method in `grading/runner.py` will likely need to change. The default implementation runs a single shell command and checks its exit code, but your project may require a build step, a running server, or other setup before tests can execute.
+
+To customize this, subclass `GradingRunner` and override `run_tests()`. The method receives no arguments -- use `self.working_dir` (the isolated copy of the repo) and `self.test_files`. Return a tuple of `(success: bool, metadata: dict)`.
+
+The following is a sketch for a hypothetical TypeScript project that uses yarn:
 
 ```python
+import subprocess
+import time
 from grading import GradingRunner
 
-class MyRunner(GradingRunner):
+class YarnTestRunner(GradingRunner):
     def run_tests(self) -> tuple[bool, dict]:
-        # Build first
+        # Build the project first
         subprocess.run(["yarn", "build"], cwd=self.working_dir, check=True)
         
-        # Start server
+        # Start the dev server (some tests may need it running)
         server = subprocess.Popen(["yarn", "start"], cwd=self.working_dir)
         time.sleep(5)
         
-        # Run tests
-        result = subprocess.run(["yarn", "test"], cwd=self.working_dir)
+        # Run the test suite
+        result = subprocess.run(
+            ["yarn", "test", *self.test_files],
+            cwd=self.working_dir,
+            capture_output=True,
+            text=True,
+        )
         
-        # Cleanup
+        # Clean up
         server.terminate()
         
-        return result.returncode == 0, {}
+        return result.returncode == 0, {
+            "exit_code": result.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+        }
 ```
+
+To use your custom runner, update `grading/graders.py` to instantiate it instead of the default `GradingRunner` in `AgentPatchGrader.compute_score()`.
 
 ---
 

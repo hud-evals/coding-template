@@ -47,7 +47,7 @@ instead of proper JSON (e.g., single quotes instead of double quotes).
 # ==============================================================================
 #
 # @env.scenario("my-task")
-# async def my_task(hints_enabled: bool = False):
+# async def my_task(hints_enabled: bool = False, validate_mode: ValidateMode | None = None):
 #     """Task description."""
 #     
 #     setup_task(
@@ -55,6 +55,7 @@ instead of proper JSON (e.g., single quotes instead of double quotes).
 #         base="my_task_baseline",
 #         test="my_task_test",
 #         golden="my_task_golden",
+#         validate_mode=validate_mode,
 #     )
 #     
 #     prompt = make_prompt("Fix the bug in foo.py...")
@@ -65,10 +66,9 @@ instead of proper JSON (e.g., single quotes instead of double quotes).
 #             weight=1.0,
 #             problem_id="my_task",
 #             test_files=["test_foo.py"],
+#             validate_mode=validate_mode,
 #             # For custom test frameworks:
 #             # test_command="yarn test {test_files}",
-#             # results_xml="jest_results.xml",
-#             # build_command="yarn build",
 #         )
 #     ])
 #     yield grade.score

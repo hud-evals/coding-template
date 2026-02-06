@@ -48,45 +48,20 @@ RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | b
 
 # 0) Set up your project repository
 #
-# LOCAL (hud build) - uses submodule, fully offline:
-#   hud build .
-#
-# LOCAL/DEPLOY with URL - clones from URL:
+# Clones from REPO_URL at build time:
+#   uv run imagectl4.py my-image -b
 #   hud build . --build-arg REPO_URL=https://github.com/your-org/your-repo
 #   hud deploy . --build-arg REPO_URL=https://github.com/your-org/your-repo
 #
 # For private repos, add: --secret id=CODING_GITHUB_TOKEN,env=CODING_GITHUB_TOKEN
-#
-# NOTE: hud deploy REQUIRES REPO_URL (submodule mode only works locally)
 
-ARG PROJECT_SUBMODULE="coding-template-sample"
 ARG REPO_URL="https://github.com/hud-evals/coding-template-sample"
 ARG FOLDER_NAME="project"
 
 ENV FOLDER_NAME=${FOLDER_NAME}
 ENV REPO_URL=${REPO_URL}
 
-# # --- Setup project repo (submodule OR clone) ---
-# RUN --mount=type=bind,source=.,target=/ctx \
-#     --mount=type=secret,id=CODING_GITHUB_TOKEN,uid=1000 \
-#     if [ -n "${REPO_URL}" ]; then \
-#         # Clone from URL \
-#         if [ -f /run/secrets/CODING_GITHUB_TOKEN ]; then \
-#             CODING_GITHUB_TOKEN=$(cat /run/secrets/CODING_GITHUB_TOKEN) && \
-#             git clone https://${CODING_GITHUB_TOKEN}@${REPO_URL#https://} /home/ubuntu/${FOLDER_NAME}; \
-#         else \
-#             git clone ${REPO_URL} /home/ubuntu/${FOLDER_NAME}; \
-#         fi \
-#     else \
-#         # Copy from submodule (local only) \
-#         cp -r /ctx/${PROJECT_SUBMODULE}/. /home/ubuntu/${FOLDER_NAME}/ && \
-#         rm -f /home/ubuntu/${FOLDER_NAME}/.git && \
-#         cp -r /ctx/.git/modules/${PROJECT_SUBMODULE}/. /home/ubuntu/${FOLDER_NAME}/.git/ && \
-#         cd /home/ubuntu/${FOLDER_NAME} && git config --unset core.worktree || true; \
-#     fi && \
-#     chown -R ubuntu:ubuntu /home/ubuntu/${FOLDER_NAME}
-
-# --- Setup project repo (clone only) ---
+# --- Setup project repo (clone from REPO_URL) ---
 RUN --mount=type=secret,id=CODING_GITHUB_TOKEN,uid=1000 \
     if [ -f /run/secrets/CODING_GITHUB_TOKEN ]; then \
         CODING_GITHUB_TOKEN=$(cat /run/secrets/CODING_GITHUB_TOKEN) && \
@@ -105,8 +80,8 @@ WORKDIR /home/ubuntu/${FOLDER_NAME}
 # The agent cannot access git history or checkout solution branches
 USER root
 RUN mkdir -p /home/root/patches && \
-    # chown -R root:root /home/ubuntu/${FOLDER_NAME}/.git && \
-    # chmod -R 700 /home/ubuntu/${FOLDER_NAME}/.git && \
+    chown -R root:root /home/ubuntu/${FOLDER_NAME}/.git && \
+    chmod -R 700 /home/ubuntu/${FOLDER_NAME}/.git && \
     git config --global --add safe.directory /home/ubuntu/${FOLDER_NAME}
 USER ubuntu
 

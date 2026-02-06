@@ -4,7 +4,7 @@ Each task is a scenario that handles its own setup and grading.
 """
 
 # from env import env, setup_task, make_prompt
-# from grading import AgentPatchGrader, Grade
+# from grading import AgentPatchGrader, Grade, ValidateMode
 
 
 # ==============================================================================
@@ -18,7 +18,7 @@ Each task is a scenario that handles its own setup and grading.
 
 
 # @env.scenario("my-hard-task")
-# async def my_hard_task(hints_enabled: bool = False):
+# async def my_hard_task(hints_enabled: bool = False, validate_mode: ValidateMode | None = None):
 #     """Implement complex feature Y with architectural changes."""
 #     
 #     setup_task(
@@ -26,6 +26,7 @@ Each task is a scenario that handles its own setup and grading.
 #         base="my_hard_task_baseline",
 #         test="my_hard_task_test",
 #         golden="my_hard_task_golden",
+#         validate_mode=validate_mode,
 #     )
 #     
 #     prompt = make_prompt("""Implement complex feature Y.
@@ -39,10 +40,9 @@ Each task is a scenario that handles its own setup and grading.
 #     grade = Grade.from_subscores([
 #         AgentPatchGrader.grade(
 #             weight=1.0,
-#             base="my_hard_task_baseline",
-#             test="my_hard_task_test",
-#             golden="my_hard_task_golden",
+#             problem_id="my_hard_task",
 #             test_files=["test_feature_y.py", "test_integration.py"],
+#             validate_mode=validate_mode,
 #         )
 #     ])
 #     
