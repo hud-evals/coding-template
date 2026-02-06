@@ -66,23 +66,33 @@ ARG FOLDER_NAME="project"
 ENV FOLDER_NAME=${FOLDER_NAME}
 ENV REPO_URL=${REPO_URL}
 
-# --- Setup project repo (submodule OR clone) ---
-RUN --mount=type=bind,source=.,target=/ctx \
-    --mount=type=secret,id=CODING_GITHUB_TOKEN,uid=1000 \
-    if [ -n "${REPO_URL}" ]; then \
-        # Clone from URL \
-        if [ -f /run/secrets/CODING_GITHUB_TOKEN ]; then \
-            CODING_GITHUB_TOKEN=$(cat /run/secrets/CODING_GITHUB_TOKEN) && \
-            git clone https://${CODING_GITHUB_TOKEN}@${REPO_URL#https://} /home/ubuntu/${FOLDER_NAME}; \
-        else \
-            git clone ${REPO_URL} /home/ubuntu/${FOLDER_NAME}; \
-        fi \
+# # --- Setup project repo (submodule OR clone) ---
+# RUN --mount=type=bind,source=.,target=/ctx \
+#     --mount=type=secret,id=CODING_GITHUB_TOKEN,uid=1000 \
+#     if [ -n "${REPO_URL}" ]; then \
+#         # Clone from URL \
+#         if [ -f /run/secrets/CODING_GITHUB_TOKEN ]; then \
+#             CODING_GITHUB_TOKEN=$(cat /run/secrets/CODING_GITHUB_TOKEN) && \
+#             git clone https://${CODING_GITHUB_TOKEN}@${REPO_URL#https://} /home/ubuntu/${FOLDER_NAME}; \
+#         else \
+#             git clone ${REPO_URL} /home/ubuntu/${FOLDER_NAME}; \
+#         fi \
+#     else \
+#         # Copy from submodule (local only) \
+#         cp -r /ctx/${PROJECT_SUBMODULE}/. /home/ubuntu/${FOLDER_NAME}/ && \
+#         rm -f /home/ubuntu/${FOLDER_NAME}/.git && \
+#         cp -r /ctx/.git/modules/${PROJECT_SUBMODULE}/. /home/ubuntu/${FOLDER_NAME}/.git/ && \
+#         cd /home/ubuntu/${FOLDER_NAME} && git config --unset core.worktree || true; \
+#     fi && \
+#     chown -R ubuntu:ubuntu /home/ubuntu/${FOLDER_NAME}
+
+# --- Setup project repo (clone only) ---
+RUN --mount=type=secret,id=CODING_GITHUB_TOKEN,uid=1000 \
+    if [ -f /run/secrets/CODING_GITHUB_TOKEN ]; then \
+        CODING_GITHUB_TOKEN=$(cat /run/secrets/CODING_GITHUB_TOKEN) && \
+        git clone https://${CODING_GITHUB_TOKEN}@${REPO_URL#https://} /home/ubuntu/${FOLDER_NAME}; \
     else \
-        # Copy from submodule (local only) \
-        cp -r /ctx/${PROJECT_SUBMODULE}/. /home/ubuntu/${FOLDER_NAME}/ && \
-        rm -f /home/ubuntu/${FOLDER_NAME}/.git && \
-        cp -r /ctx/.git/modules/${PROJECT_SUBMODULE}/. /home/ubuntu/${FOLDER_NAME}/.git/ && \
-        cd /home/ubuntu/${FOLDER_NAME} && git config --unset core.worktree || true; \
+        git clone ${REPO_URL} /home/ubuntu/${FOLDER_NAME}; \
     fi && \
     chown -R ubuntu:ubuntu /home/ubuntu/${FOLDER_NAME}
 
@@ -178,10 +188,6 @@ RUN pip install uv --break-system-packages
 # env.py: tools + scenario registration
 # tasks/: scenario definitions
 # For dev iteration: hud dev -w tasks -w grading --port 8765
-COPY ./env.py /mcp_server/env.py
-COPY ./tools /mcp_server/tools
-COPY ./grading /mcp_server/grading
-COPY ./tasks /mcp_server/tasks
 COPY ./pyproject.toml /mcp_server/pyproject.toml
 WORKDIR /mcp_server
 
@@ -189,6 +195,11 @@ ENV RUST_LOG=warn
 RUN uv venv && . .venv/bin/activate && uv sync --no-install-project --extra dev && uv pip install -e .
 ENV PYTHONPATH=/mcp_server/.venv/lib/python3.12/site-packages:/mcp_server
 ENV PATH=/mcp_server/.venv/bin:$PATH
+
+COPY ./env.py /mcp_server/env.py
+COPY ./tools /mcp_server/tools
+COPY ./grading /mcp_server/grading
+COPY ./tasks /mcp_server/tasks
 
 RUN chmod 777 /root
 

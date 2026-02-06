@@ -34,6 +34,25 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
+# Scenario discovery
+# ============================================================================
+
+
+def discover_scenario_ids() -> list[str]:
+    """Auto-discover all registered scenario IDs by importing env.py.
+
+    Importing ``env`` triggers ``import tasks`` at the bottom of env.py,
+    which runs the ``@env.scenario(...)`` decorators and populates
+    ``env._scenarios`` (a dict keyed by scenario name).
+    """
+    from env import env as _env  # noqa: WPS433 – intentional late import
+
+    ids = list(_env._scenarios.keys())
+    logger.info(f"Auto-discovered {len(ids)} scenario(s): {ids}")
+    return ids
+
+
+# ============================================================================
 # Subprocess helpers (async)
 # ============================================================================
 
@@ -262,8 +281,16 @@ def generate_json(
 async def async_main(args: argparse.Namespace) -> int:
     """Execute the requested actions in order: build -> validate -> run -> push -> json."""
     image: str = args.image
-    scenario_ids: list[str] = args.ids or []
     has_failures = False
+
+    # Resolve scenario IDs: use --ids if given, otherwise auto-discover all.
+    scenario_ids: list[str] = args.ids or []
+    needs_scenarios = args.validate or args.run or args.json
+    if not scenario_ids and needs_scenarios:
+        scenario_ids = discover_scenario_ids()
+        if not scenario_ids:
+            logger.error("No scenarios found. Register scenarios via @env.scenario() in tasks/.")
+            return 1
 
     # --- Build ---
     if args.build:
@@ -273,10 +300,6 @@ async def async_main(args: argparse.Namespace) -> int:
 
     # --- Validate ---
     if args.validate:
-        if not scenario_ids:
-            logger.error("--ids is required for --validate")
-            return 1
-
         logger.info(
             f"Validating {len(scenario_ids)} scenario(s) "
             f"× {len(VALIDATE_MODES)} modes ..."
@@ -293,10 +316,6 @@ async def async_main(args: argparse.Namespace) -> int:
 
     # --- Run ---
     if args.run:
-        if not scenario_ids:
-            logger.error("--ids is required for --run")
-            return 1
-
         logger.info(
             f"Running {len(scenario_ids)} scenario(s) "
             f"(max_steps={args.max_steps}) ..."
@@ -323,9 +342,6 @@ async def async_main(args: argparse.Namespace) -> int:
 
     # --- JSON ---
     if args.json:
-        if not scenario_ids:
-            logger.error("--ids is required for --json")
-            return 1
         generate_json(image, scenario_ids)
 
     return 1 if has_failures else 0
@@ -346,7 +362,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument(
         "--ids",
         nargs="+",
-        help="Scenario IDs to validate / run (e.g. sample-json-bug)",
+        help="Scenario IDs to validate / run (default: all registered scenarios)",
     )
 
     # Action flags --------------------------------------------------------
