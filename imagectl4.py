@@ -112,6 +112,8 @@ async def validate_scenario(
     image: str,
     scenario_id: str,
     validate_mode: str,
+    *,
+    hints_enabled: bool = False,
 ) -> tuple[str, str, float | None]:
     """Validate a single scenario + mode by running an eval with 0 agent steps.
 
@@ -129,7 +131,7 @@ async def validate_scenario(
     env.connect_image(image)
 
     try:
-        task = env(scenario_id, validate_mode=validate_mode)
+        task = env(scenario_id, validate_mode=validate_mode, hints_enabled=hints_enabled)
         async with hud.eval(task, trace=True, quiet=True) as ctx:
             agent = ClaudeAgent.create(model="claude-sonnet-4-5")
             await agent.run(ctx, max_steps=0)
@@ -144,6 +146,8 @@ async def validate_scenario(
 async def validate_all(
     image: str,
     scenario_ids: list[str],
+    *,
+    hints_enabled: bool = False,
 ) -> tuple[list[str], list[str]]:
     """Validate all scenarios with both ``baseline_fail`` and ``golden_pass`` modes.
 
@@ -153,7 +157,7 @@ async def validate_all(
         (passed_descriptions, failed_descriptions)
     """
     coros = [
-        validate_scenario(image, sid, mode)
+        validate_scenario(image, sid, mode, hints_enabled=hints_enabled)
         for sid in scenario_ids
         for mode in VALIDATE_MODES
     ]
@@ -188,19 +192,21 @@ async def run_scenario(
     image: str,
     scenario_id: str,
     max_steps: int,
+    *,
+    hints_enabled: bool = False,
 ) -> tuple[str, float | None]:
     """Run an agent against a scenario.
 
     Returns:
         (scenario_id, reward)  — reward is None on error.
     """
-    logger.info(f"Running scenario: {scenario_id} (max_steps={max_steps})")
+    logger.info(f"Running scenario: {scenario_id} (max_steps={max_steps}, hints={hints_enabled})")
 
     env = Environment("coding")
     env.connect_image(image)
 
     try:
-        task = env(scenario_id)
+        task = env(scenario_id, hints_enabled=hints_enabled)
         async with hud.eval(task, trace=True) as ctx:
             agent = ClaudeAgent.create(model="claude-sonnet-4-5")
             await agent.run(ctx, max_steps=max_steps)
@@ -216,13 +222,15 @@ async def run_all(
     image: str,
     scenario_ids: list[str],
     max_steps: int,
+    *,
+    hints_enabled: bool = False,
 ) -> tuple[list[tuple[str, float]], list[tuple[str, float | None]]]:
     """Run all scenarios concurrently with an agent.
 
     Returns:
         (succeeded, failed)  — each entry is (scenario_id, reward).
     """
-    coros = [run_scenario(image, sid, max_steps) for sid in scenario_ids]
+    coros = [run_scenario(image, sid, max_steps, hints_enabled=hints_enabled) for sid in scenario_ids]
     results = await asyncio.gather(*coros, return_exceptions=True)
 
     succeeded: list[tuple[str, float]] = []
@@ -249,28 +257,54 @@ async def run_all(
 # ============================================================================
 
 
+def _write_json(data: list[dict], path: str) -> None:
+    """Write a JSON list to *path* with trailing newline."""
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+
+
 def generate_json(
     image: str,
     scenario_ids: list[str],
-    output_file: str = "problem-metadata.json",
+    *,
+    hints_enabled: bool = False,
+    env_name: str = "coding-template",
 ) -> None:
-    """Generate ``problem-metadata.json`` describing the scenarios."""
-    problems = []
-    for sid in scenario_ids:
-        problems.append(
-            {
-                "env": {"name": "coding"},
-                "scenario": f"coding:{sid}",
-                "image": image,
-                "args": {},
-            }
-        )
+    """Generate ``problem-metadata.json`` and ``remote_tasks.json``.
 
-    with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(problems, f, indent=2)
-        f.write("\n")
+    - ``problem-metadata.json`` includes the Docker image name.
+    - ``remote_tasks.json`` uses the deployed environment name (no image field)
+      and is consumed by ``hud eval remote_tasks.json``.
+    """
+    scenario_args: dict = {}
+    if hints_enabled:
+        scenario_args["hints_enabled"] = True
 
-    logger.info(f"Generated {output_file} with {len(problems)} scenario(s)")
+    # -- problem-metadata.json (includes image) --
+    problem_metadata = [
+        {
+            "env": {"name": env_name},
+            "scenario": f"coding:{sid}",
+            "image": image,
+            "args": {**scenario_args},
+        }
+        for sid in scenario_ids
+    ]
+    _write_json(problem_metadata, "problem-metadata.json")
+    logger.info(f"Generated problem-metadata.json with {len(problem_metadata)} scenario(s)")
+
+    # -- remote_tasks.json (no image, used by hud eval) --
+    remote_tasks = [
+        {
+            "env": {"name": env_name},
+            "scenario": f"coding:{sid}",
+            "args": {**scenario_args},
+        }
+        for sid in scenario_ids
+    ]
+    _write_json(remote_tasks, "remote_tasks.json")
+    logger.info(f"Generated remote_tasks.json with {len(remote_tasks)} scenario(s)")
 
 
 # ============================================================================
@@ -281,6 +315,7 @@ def generate_json(
 async def async_main(args: argparse.Namespace) -> int:
     """Execute the requested actions in order: build -> validate -> run -> push -> json."""
     image: str = args.image
+    hints_enabled: bool = args.hints
     has_failures = False
 
     # Resolve scenario IDs: use --ids if given, otherwise auto-discover all.
@@ -291,6 +326,9 @@ async def async_main(args: argparse.Namespace) -> int:
         if not scenario_ids:
             logger.error("No scenarios found. Register scenarios via @env.scenario() in tasks/.")
             return 1
+
+    if hints_enabled:
+        logger.info("Hints ENABLED for this run")
 
     # --- Build ---
     if args.build:
@@ -304,7 +342,9 @@ async def async_main(args: argparse.Namespace) -> int:
             f"Validating {len(scenario_ids)} scenario(s) "
             f"× {len(VALIDATE_MODES)} modes ..."
         )
-        passed, failed = await validate_all(image, scenario_ids)
+        passed, failed = await validate_all(
+            image, scenario_ids, hints_enabled=hints_enabled,
+        )
 
         logger.info("")
         logger.info("Validation summary:")
@@ -320,7 +360,9 @@ async def async_main(args: argparse.Namespace) -> int:
             f"Running {len(scenario_ids)} scenario(s) "
             f"(max_steps={args.max_steps}) ..."
         )
-        succeeded, failed_runs = await run_all(image, scenario_ids, args.max_steps)
+        succeeded, failed_runs = await run_all(
+            image, scenario_ids, args.max_steps, hints_enabled=hints_enabled,
+        )
 
         logger.info("")
         logger.info("Run summary:")
@@ -342,7 +384,7 @@ async def async_main(args: argparse.Namespace) -> int:
 
     # --- JSON ---
     if args.json:
-        generate_json(image, scenario_ids)
+        generate_json(image, scenario_ids, hints_enabled=hints_enabled)
 
     return 1 if has_failures else 0
 
@@ -398,6 +440,12 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
 
     # Options -------------------------------------------------------------
+    parser.add_argument(
+        "--hints",
+        action="store_true",
+        default=False,
+        help="Enable hints for scenarios (passed as hints_enabled to scenarios, included in JSON args)",
+    )
     parser.add_argument(
         "--max-steps",
         type=int,

@@ -53,30 +53,60 @@ The function returns incorrect results when given negative numbers.
     yield grade.score
 ```
 
-### 3. Validate your task
+### 3. Build the Docker image
 
-Before testing with an agent, verify your branches are set up correctly:
+Build the image before validating or running:
 
 ```bash
-hud dev -w tasks -w grading --port 8765
-
-# In another terminal, edit local_test.py and uncomment:
-# await validate_golden()
-
-python local_test.py
+uv run imagectl4.py my-image -b
 ```
 
-This checks that:
-- The golden branch can be checked out
-- Tests pass on the golden branch
+### 4. Validate your task
 
-### 4. Test with an agent
+Before testing with an agent, validate that your branches and grading are set up correctly:
 
 ```bash
-# Uncomment in local_test.py:
-# await test_scenario()
+# Validate all registered scenarios
+uv run imagectl4.py my-image -v
 
-python local_test.py
+# Validate specific scenarios only
+uv run imagectl4.py my-image -v --ids my-task
+```
+
+If `--ids` is omitted, `imagectl4.py` auto-discovers every scenario registered via `@env.scenario()` in `tasks/`.
+
+**How validation works:** Validation runs each scenario with zero agent steps (the agent does nothing) and then evaluates the grader. Each scenario is tested in two modes:
+
+- **`baseline_fail`** — The environment starts on the baseline branch (the buggy code). Since the agent takes no steps, the tests should *fail*. The grader detects this failure and inverts the score, so a correctly-configured task reports `reward = 1.0`.
+- **`golden_pass`** — The environment starts on the golden branch (the correct solution). Since the solution is already in place, the tests should *pass*, and the grader reports `reward = 1.0` directly.
+
+Both modes must return `reward = 1.0` for validation to pass. If either mode fails, it means your branches, patches, or grading logic are misconfigured. Common issues:
+
+- `baseline_fail` returns 0 — The baseline branch already passes the tests (the bug isn't actually present, or test branch is wrong).
+- `golden_pass` returns 0 — The golden branch doesn't pass the tests (the solution is incomplete, or the test files don't match).
+
+### 5. Test with an agent
+
+Once validation passes, run an agent against your scenarios:
+
+```bash
+# Run all scenarios
+uv run imagectl4.py my-image -r
+
+# Run specific scenarios with custom step limit
+uv run imagectl4.py my-image -r --ids my-task --max-steps 30
+```
+
+### 6. Build, validate, and run in one command
+
+Flags can be combined. Actions always execute in order: build, validate, run, push, json.
+
+```bash
+# Build + validate + run
+uv run imagectl4.py my-image -bvr
+
+# Full pipeline: build, validate, run, push, and generate metadata
+uv run imagectl4.py my-image -bvrpj --ids my-task
 ```
 
 ---
@@ -211,6 +241,49 @@ class MyRunner(GradingRunner):
 
 ---
 
+## Updating Package Name
+
+Edit `pyproject.toml`:
+
+```toml
+[project]
+name = "your-company-evaluation-framework"
+description = "AI Agent Evaluation Framework for [Your Project]"
+```
+
+---
+
+## Database Configuration
+
+If your tests need a database, set it up in the test command or Dockerfile.
+
+**MySQL:**
+```python
+drop_cmd = f"mysql -u root -p{password} -e 'DROP DATABASE IF EXISTS {db_name}'"
+create_cmd = f"mysql -u root -p{password} -e 'CREATE DATABASE {db_name}'"
+```
+
+**MongoDB:**
+```python
+drop_cmd = f"mongo {db_name} --eval 'db.dropDatabase()'"
+```
+
+---
+
+## User Context
+
+If your project doesn't run as `ubuntu`:
+
+```python
+# In tools/bash.py - remove sudo wrapper
+subprocess.run(["bash", "-lc", command], ...)
+
+# Or use a different user
+subprocess.run(["sudo", "-u", "youruser", "bash", "-lc", command], ...)
+```
+
+---
+
 ## Quick Reference
 
 | File | Purpose |
@@ -220,4 +293,4 @@ class MyRunner(GradingRunner):
 | `grading/runner.py` | Test execution |
 | `Dockerfile.hud` | Build configuration |
 | `env.py` | MCP server and tools |
-| `local_test.py` | Local testing script |
+| `imagectl4.py` | Build, validate, run, push, and JSON generation |
