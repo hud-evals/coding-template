@@ -5,112 +5,102 @@ Development workflow:
 2. Run this script: python local_test.py
 3. Edit tasks/*.py or grading/*.py - container auto-reloads
 4. Re-run this script to test changes
-
-Scenarios call internal tools (_grade_solution) on the container.
-Task definitions and grading logic run inside the container (hot-reloaded).
 """
+
 import asyncio
 import os
 
 import hud
 from hud import Environment
-from hud.agents import OpenAIChatAgent
+from hud.agents.claude import ClaudeAgent
 from hud.settings import settings
 from openai import AsyncOpenAI
 
-# Import scenario registration (shares helpers with env.py and cli.py)
-from scenarios import register_scenarios
+# Create a clean Environment for client-side use.
+# IMPORTANT: Do NOT import env from env.py here. Importing env.py registers
+# @env.tool() bash/editor as LOCAL tools, which makes the router call them
+# in-process (where _bash_tool is None) instead of routing to the container.
+# With a fresh Environment, all tool calls route to the remote container.
+env = Environment("coding")
 
-# Use HUD inference gateway - see all models at https://hud.ai/models
+# Use HUD inference gateway
 client = AsyncOpenAI(base_url="https://inference.hud.ai", api_key=settings.api_key)
 
 # Connect to running container
 DEV_URL = os.getenv("HUD_DEV_URL", "http://localhost:8765/mcp")
-
-env = Environment("coding")
-env.connect_url(DEV_URL)
-
-# Register scenarios (they use call_tool which goes to the container)
-register_scenarios(env)
-
-
-# ============================================================================
-# Tests
-# ============================================================================
+#env.connect_url(DEV_URL)
+env.connect_image("coding-template")
 
 
 async def test_tools_standalone():
     """Test environment tools directly (no scenario)."""
-    print("=== Test 1: Standalone Tools ===")
+    print("=== Test: Standalone Tools ===")
     print(f"Connecting to: {DEV_URL}")
 
     async with env:
         tools = env.as_tools()
-        # Filter out internal tools (prefixed with _)
         visible_tools = [t for t in tools if not t.name.startswith("_")]
         print(f"Agent-visible tools: {[t.name for t in visible_tools]}")
-        print(f"Internal tools: {[t.name for t in tools if t.name.startswith('_')]}")
 
-        # Test bash
         result = await env.call_tool("bash", command="echo 'Hello from coding env'")
         print(f"Bash result: {result}")
 
 
-async def test_solve_task_manual():
-    """Test solve-task scenario with manual OpenAI completions loop."""
-    print("\n=== Test 2: Solve Task (Manual Agent Loop) ===")
+async def test_scenario():
+    """Test a scenario with an agent."""
+    print("\n=== Test: sample-json-bug Scenario ===")
 
     async with env:
-        task = env("solve-task", problem_id="template_basic_task")
+        # Use the scenario name directly
+        task = env("sample-json-bug")
 
         async with hud.eval(task, trace=True) as ctx:
-            messages = [{"role": "user", "content": ctx.prompt}]
-
-            for _ in range(10):
-                response = await client.chat.completions.create(
-                    model="gpt-4o",  # https://hud.ai/models
-                    messages=messages,
-                    tools=ctx.as_openai_chat_tools(),
-                )
-                msg = response.choices[0].message
-
-                if not msg.tool_calls:
-                    print(f"Agent finished with: {msg.content}")
-                    break
-
-                messages.append(msg)
-                for tc in msg.tool_calls:
-                    result = await ctx.call_tool(tc)
-                    messages.append(result)
-
-
-async def test_solve_task_agent():
-    """Test solve-task scenario with OpenAIChatAgent."""
-    print("\n=== Test 3: Solve Task (OpenAIChatAgent) ===")
-
-    async with env:
-        task = env("solve-task", problem_id="template_basic_task")
-
-        async with hud.eval(task, trace=True) as ctx:
-            agent = OpenAIChatAgent.create(model="gpt-4o")  # https://hud.ai/models
+            agent = ClaudeAgent.create(model="claude-sonnet-4-5")
             await agent.run(ctx, max_steps=20)
 
 
-async def test_distribution():
-    """Test multiple tasks with variants and groups for A/B testing."""
-    print("\n=== Test 4: Distribution (Variants + Groups) ===")
-
+async def validate_golden(
+    base: str = "server_fix_baseline",
+    test: str = "server_fix_test",
+    golden: str = "server_fix_golden",
+    test_files: list[str] = ["test_server.py"],
+):
+    """Dry run: verify golden branch passes tests.
+    
+    This validates your task setup by:
+    1. Checking out golden branch (the solution)
+    2. Running test files
+    3. Reporting pass/fail
+    """
+    print(f"\n=== Validate Golden Branch: {golden} ===")
+    
     async with env:
-        tasks = [
-            env("solve-task", problem_id="template_basic_task"),
-            env("solve-task", problem_id="template_medium_task"),
-        ]
-        variants = {"model": ["gpt-4o-mini", "gpt-4o"]}
-        group = 2
+        # Checkout golden branch
+        print(f"Checking out: {golden}")
+        result = await env.call_tool("bash", command=f"cd /home/ubuntu/project && git checkout origin/{golden}")
+        print(result.model_dump_json(indent=2))
 
-        async with hud.eval(tasks, variants=variants, group=group, trace=True) as ctx:
-            agent = OpenAIChatAgent.create(model=ctx.variants["model"])
-            await agent.run(ctx, max_steps=20)
+        result = await env.call_tool("bash", command="cat /etc/os-release")
+        print(result.model_dump_json(indent=2))
+
+        print(f"Checkout result: {result}")
+        
+        # Run tests
+        test_cmd = f"cd /home/ubuntu/project && python -m pytest {' '.join(test_files)} -v"
+        print(f"Running: {test_cmd}")
+        result = await env.call_tool("bash", command=test_cmd)
+        print(result)
+        from time import sleep
+        sleep(1000)
+        # Check result
+        if "passed" in result.lower() and "failed" not in result.lower():
+            print("\n✅ Golden branch PASSES tests")
+        else:
+            print("\n❌ Golden branch FAILS tests - check your setup!")
+        
+        # Reset to baseline
+        await env.call_tool("bash", command=f"cd /home/ubuntu/project && git checkout origin/{base}")
+        print(f"Reset to baseline: {base}")
 
 
 async def main():
@@ -124,10 +114,11 @@ async def main():
 
     await test_tools_standalone()
 
-    # Uncomment to run full scenarios:
-    # await test_solve_task_manual()
-    # await test_solve_task_agent()
-    # await test_distribution()
+    # Uncomment to validate golden branch passes tests:
+    # await validate_golden()
+    
+    # Uncomment to run scenario with agent:
+    await test_scenario()
 
 
 if __name__ == "__main__":

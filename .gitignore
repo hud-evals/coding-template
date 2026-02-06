@@ -31,6 +31,9 @@ node_modules/
 logs/
 tmp/
 
+# references
+reference/
+
 # Docker
 docker_build.log
 
@@ -40,3 +43,6 @@ coverage/
 
 # HUD
 hud.lock.yaml
+.hud
+.hud_eval.toml
+problem-metadata.json
