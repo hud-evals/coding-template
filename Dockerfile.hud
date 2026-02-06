@@ -183,8 +183,6 @@ COPY ./tools /mcp_server/tools
 COPY ./grading /mcp_server/grading
 COPY ./tasks /mcp_server/tasks
 COPY ./pyproject.toml /mcp_server/pyproject.toml
-COPY ./README.md /mcp_server/README.md
-
 WORKDIR /mcp_server
 
 ENV RUST_LOG=warn
