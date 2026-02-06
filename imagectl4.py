@@ -23,7 +23,9 @@ import asyncio
 import json
 import logging
 import sys
+import tomllib
 from collections.abc import Iterable
+from pathlib import Path
 
 import hud
 from hud import Environment
@@ -31,6 +33,38 @@ from hud.agents.claude import ClaudeAgent
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
+
+PYPROJECT_PATH = Path("pyproject.toml")
+
+
+# ============================================================================
+# Image name resolution
+# ============================================================================
+
+
+def read_image_from_pyproject() -> str | None:
+    """Read the image name from ``[tool.hud].image`` in pyproject.toml.
+
+    Returns:
+        The image name string, or None if not found.
+    """
+    if not PYPROJECT_PATH.exists():
+        return None
+
+    try:
+        with open(PYPROJECT_PATH, "rb") as f:
+            data = tomllib.load(f)
+        return data.get("tool", {}).get("hud", {}).get("image")
+    except Exception as exc:
+        logger.debug(f"Failed to read pyproject.toml: {exc}")
+        return None
+
+
+def _looks_like_registry_image(image: str) -> bool:
+    """Return True if the image name contains a registry prefix (has a '/')."""
+    # Strip the tag/digest to inspect just the name portion
+    name = image.split("@")[0].split(":")[0]
+    return "/" in name
 
 
 # ============================================================================
@@ -314,7 +348,22 @@ def generate_json(
 
 async def async_main(args: argparse.Namespace) -> int:
     """Execute the requested actions in order: build -> validate -> run -> push -> json."""
-    image: str = args.image
+    # Resolve image name: CLI arg > [tool.hud].image in pyproject.toml
+    image: str | None = args.image
+    if not image:
+        image = read_image_from_pyproject()
+        if image:
+            logger.info(f"Using image from pyproject.toml [tool.hud]: {image}")
+        else:
+            logger.error(
+                "No image specified and could not read [tool.hud].image "
+                "from pyproject.toml. Pass an image name or add:\n\n"
+                "  [tool.hud]\n"
+                '  image = "your-image:tag"\n\n'
+                "to pyproject.toml."
+            )
+            return 1
+
     hints_enabled: bool = args.hints
     has_failures = False
 
@@ -378,6 +427,12 @@ async def async_main(args: argparse.Namespace) -> int:
 
     # --- Push ---
     if args.push:
+        if not _looks_like_registry_image(image):
+            logger.warning(
+                f"Image name '{image}' does not contain a registry prefix "
+                f"(e.g. 'myregistry.io/org/image:tag'). "
+                f"Pushing a local-only name will likely fail."
+            )
         ok = await push_image(image)
         if not ok:
             has_failures = True
@@ -399,7 +454,12 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     parser.add_argument(
         "image",
-        help="Docker image name (e.g. myregistry/coding-template:latest)",
+        nargs="?",
+        default=None,
+        help=(
+            "Docker image name (e.g. myregistry/coding-template:latest). "
+            "If omitted, reads from [tool.hud].image in pyproject.toml."
+        ),
     )
     parser.add_argument(
         "--ids",

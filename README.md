@@ -8,7 +8,7 @@ A coding environment for agent evaluations. Provides bash and file editing tools
 
 ```bash
 uv sync
-uv run imagectl4.py my-image -bvr  # Build, validate, and run
+uv run imagectl4.py coding-template -bvr  # Build, validate, and run
 ```
 
 ## Getting Started
@@ -29,21 +29,21 @@ uv sync
 
 ```bash
 # Build the Docker image
-uv run imagectl4.py my-image -b
+uv run imagectl4.py coding-template -b
 
 # Validate that your task branches and grading are correct
-uv run imagectl4.py my-image -v
+uv run imagectl4.py coding-template -v
 
 # Run an agent against scenarios
-uv run imagectl4.py my-image -r
+uv run imagectl4.py coding-template -r
 
 # Or combine all three
-uv run imagectl4.py my-image -bvr
+uv run imagectl4.py coding-template -bvr
 ```
 
 Use `--ids` to target specific scenarios:
 ```bash
-uv run imagectl4.py my-image -bvr --ids my-task-1 my-task-2
+uv run imagectl4.py coding-template -bvr --ids my-task-1 my-task-2
 ```
 
 ### Remote
@@ -202,18 +202,10 @@ This environment requires Docker. Use `imagectl4.py` for local development and q
 
 ```bash
 uv sync
-
-# Build the Docker image
-uv run imagectl4.py my-image -b
-
-# Validate your tasks
-uv run imagectl4.py my-image -v
-
-# Run an agent against your scenarios
-uv run imagectl4.py my-image -r
-
-# Or combine all three
-uv run imagectl4.py my-image -bvr
+# -b: build
+# -v: validate
+# -r: run
+uv run imagectl4.py -bvr
 ```
 
 Edit tasks in `tasks/*.py` or grading in `grading/`, then rebuild and re-validate with `-bv`.
