@@ -1,9 +1,9 @@
 [project]
-name = "coding-env"
+name = "coding-env-with-git"
 version = "0.1.0"
-description = "Coding environment with bash, editor, and VNC tools for solving programming tasks"
+description = "Git-enabled coding environment with bash, editor tools and full git access for AI agent evaluations"
 requires-python = ">=3.11"
-dependencies = [ "hud-python[agents]>=0.5.17", "click>=8.0.0", "mcp[cli]>=1.10.1", "numpy>=1.26.0", "packaging>=21.0", "pillow", "pydantic>=2.11.4",]
+dependencies = [ "hud-python[agents]>=0.5.17", "click>=8.0.0", "mcp[cli]>=1.10.1", "numpy>=1.26.0", "packaging>=21.0", "pillow", "pydantic>=2.11.4", "pyyaml>=6.0",]
 
 [build-system]
 requires = [ "hatchling",]
@@ -20,7 +20,7 @@ target-version = "py311"
 line-length = 120
 
 [tool.hud]
-image = "coding-template:dev"
+image = "coding-template-with-git:dev"
 
 [tool.ruff.lint]
 select = [ "E", "F", "B", "I", "C4", "UP",]

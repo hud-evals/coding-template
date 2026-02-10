@@ -2,7 +2,11 @@
 
 ## Creating New Tasks
 
-Tasks are defined in `tasks/*.py` using the `@env.scenario` decorator.
+Tasks in this git-enabled template follow the same 3-branch pattern as the original template,
+but with two key differences:
+
+1. **Git configuration is in `task_config.yaml`** (not hardcoded in scenarios)
+2. **Agents have full git access** (`git log`, `git blame`, `git diff`, etc.)
 
 ### 1. Set up branches in your target repo
 
@@ -11,7 +15,25 @@ Each task needs 3 branches:
 - `test` - Adds test files that verify the fix
 - `golden` - Contains the correct solution
 
-### 2. Define the scenario
+### 2. Add the task to task_config.yaml
+
+```yaml
+tasks:
+  my-task:
+    worktree:
+      checkout: my_task_baseline
+      include_branches:
+        - my_task_baseline
+      # snapshot_before: "2026-01-15T00:00:00Z"  # Optional
+    grading:
+      test_branch: my_task_test
+      golden_branch: my_task_golden
+      test_files:
+        - test_foo.py
+      # test_command: "pytest {test_files} -v"  # Optional
+```
+
+### 3. Define the scenario
 
 ```python
 # tasks/basic.py
@@ -21,235 +43,175 @@ from grading import AgentPatchGrader, Grade, ValidateMode
 @env.scenario("my-task")
 async def my_task(hints_enabled: bool = False, validate_mode: ValidateMode | None = None):
     """Short description of the task."""
-    
-    # Set up git branches and patches
+
     setup_task(
-        task_id="my_task",
-        base="my_task_baseline",
-        test="my_task_test",
-        golden="my_task_golden",
+        task_id="my-task",           # Must match key in task_config.yaml
+        checkout="my_task_baseline",  # Branch the agent starts on
         validate_mode=validate_mode,
     )
-    
-    # Define the prompt shown to the agent
+
     prompt = make_prompt("""Fix the bug in foo.py.
-    
+
 The function returns incorrect results when given negative numbers.
+Use git log and git blame to investigate when the bug was introduced.
 """)
-    
-    # Yield prompt, wait for agent to finish
+
     _ = yield prompt
-    
-    # Grade the solution
+
     grade = Grade.from_subscores([
         AgentPatchGrader.grade(
             weight=1.0,
-            problem_id="my_task",
+            problem_id="my-task",
             test_files=["test_foo.py"],
             validate_mode=validate_mode,
         )
     ])
-    
+
     yield grade.score
 ```
 
-### 3. Build the Docker image
-
-Build the image before validating or running:
+### 4. Build and validate
 
 ```bash
-uv run imagectl4.py my-image -b
+uv run imagectl4.py -bv --ids my-task
 ```
-
-### 4. Validate your task
-
-Before testing with an agent, validate that your branches and grading are set up correctly:
-
-```bash
-# Validate all registered scenarios
-uv run imagectl4.py my-image -v
-
-# Validate specific scenarios only
-uv run imagectl4.py my-image -v --ids my-task
-```
-
-If `--ids` is omitted, `imagectl4.py` auto-discovers every scenario registered via `@env.scenario()` in `tasks/`.
-
-**How validation works:** Validation runs each scenario with zero agent steps (the agent does nothing) and then evaluates the grader. Each scenario is tested in two modes:
-
-- **`baseline_fail`** — The environment starts on the baseline branch (the buggy code). Since the agent takes no steps, the tests should *fail*. The grader detects this failure and inverts the score, so a correctly-configured task reports `reward = 1.0`.
-- **`golden_pass`** — The environment starts on the golden branch (the correct solution). Since the solution is already in place, the tests should *pass*, and the grader reports `reward = 1.0` directly.
-
-Both modes must return `reward = 1.0` for validation to pass. If either mode fails, it means your branches, patches, or grading logic are misconfigured. Common issues:
-
-- `baseline_fail` returns 0 — The baseline branch already passes the tests (the bug isn't actually present, or test branch is wrong).
-- `golden_pass` returns 0 — The golden branch doesn't pass the tests (the solution is incomplete, or the test files don't match).
 
 ### 5. Test with an agent
 
-Once validation passes, run an agent against your scenarios:
-
 ```bash
-# Run all scenarios
-uv run imagectl4.py my-image -r
-
-# Run specific scenarios with custom step limit
-uv run imagectl4.py my-image -r --ids my-task --max-steps 30
+uv run imagectl4.py -r --ids my-task --max-steps 30
 ```
 
-### 6. Build, validate, and run in one command
-
-Flags can be combined. Actions always execute in order: build, validate, run, push, json.
+### 6. Combine all steps
 
 ```bash
-# Build + validate + run
-uv run imagectl4.py my-image -bvr
-
-# Full pipeline: build, validate, run, push, and generate metadata
-uv run imagectl4.py my-image -bvrpj --ids my-task
+uv run imagectl4.py -bvr --ids my-task
 ```
+
+---
+
+## task_config.yaml Reference
+
+### Branch Visibility
+
+**Explicit whitelist** (recommended for most tasks):
+```yaml
+worktree:
+  checkout: baseline
+  include_branches:
+    - baseline
+    - main
+```
+
+**Keep all non-grading branches** (omit `include_branches`):
+```yaml
+worktree:
+  checkout: baseline
+  # All branches except test/golden will be visible
+```
+
+### Snapshot Before (History Truncation)
+
+Show the repo as it was on a specific date:
+```yaml
+worktree:
+  checkout: main
+  snapshot_before: "2026-01-15T00:00:00Z"
+```
+
+This finds the last commit before that date and resets the branch to it.
+Useful for scenarios like "a regression was introduced sometime last week."
+
+### Multi-Task Configuration
+
+Multiple tasks can share the same repo with different configurations:
+```yaml
+tasks:
+  fix-auth-bug:
+    worktree:
+      checkout: main
+      include_branches: [main, develop]
+    grading:
+      test_branch: auth_test
+      golden_branch: auth_golden
+      test_files: [tests/test_auth.py]
+
+  fix-api-bug:
+    worktree:
+      checkout: main
+      include_branches: [main]
+    grading:
+      test_branch: api_test
+      golden_branch: api_golden
+      test_files: [tests/test_api.py]
+```
+
+The build script keeps the union of all branches across tasks.
 
 ---
 
 ## Adding Build Packages
 
 Edit `Dockerfile.hud` to install packages needed for your project.
+The git setup section runs before dependency installation, so you can
+customize both independently.
 
 ### System packages (apt)
 
 ```dockerfile
-# Near the top, after the base apt-get install
 RUN apt-get update && apt-get install -y \
     postgresql-client \
     redis-tools \
     && rm -rf /var/lib/apt/lists/*
 ```
 
-### Language runtimes
-
-```dockerfile
-# Node.js (uncomment and customize)
-RUN bash -c "source ~/.nvm/nvm.sh && nvm install 20 && nvm alias default 20"
-
-# Python packages
-RUN pip install pytest numpy pandas
-
-# Rust
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-```
-
 ### Project dependencies
 
 ```dockerfile
 # After WORKDIR /home/ubuntu/project
-
-# Node.js
-RUN yarn install
-
-# Python
 RUN pip install -r requirements.txt
-
-# Java
-RUN mvn dependency:resolve
-```
-
----
-
-## Customizing the Build Flow
-
-The build flow is defined in `Dockerfile.hud`. Key sections:
-
-### Project setup
-
-Controls how the target repository is loaded. By default, it clones from `REPO_URL` at build time.
-
-```dockerfile
-ARG REPO_URL="https://github.com/hud-evals/coding-template-sample"      # Clone from URL
-ARG FOLDER_NAME="project"                                                # Destination folder
-```
-
-### Git protection
-
-Protects `.git` from agent access so they can't peek at solutions:
-
-```dockerfile
-USER root
-RUN chown -R root:root /home/ubuntu/${FOLDER_NAME}/.git && \
-    chmod -R 700 /home/ubuntu/${FOLDER_NAME}/.git
-USER ubuntu
-```
-
-### MCP server setup
-
-Installs the evaluation environment and tools:
-
-```dockerfile
-COPY ./env.py /mcp_server/env.py
-COPY ./grading /mcp_server/grading
-COPY ./tasks /mcp_server/tasks
 ```
 
 ---
 
 ## Customizing the Testing Flow
 
-### How the grading runner works
-
-The default grading logic lives in `grading/runner.py`. The `GradingRunner.grade()` method does the following:
-
-1. **Copies the repo** to an isolated `/tmp/grading_<uuid>` directory so grading doesn't affect the agent's working copy.
-2. **Applies `test.patch`** via `git apply`. This patch (generated at runtime from `base` → `test` branch) adds hidden test files into the copy.
-3. **Calls `run_tests()`**, which formats and runs the `test_command` string (default: `uv run pytest {test_files}`) via `bash -lc` in the copied directory.
-4. **Returns 1.0** if the tests pass (exit code 0), **0.0** otherwise.
-
-The default `test_command` is `uv run pytest {test_files}`, where `{test_files}` is replaced with the space-joined list of test file names you pass to `AgentPatchGrader.grade()`.
-
 ### Simple: Configure the test command
 
-For many projects you only need to change the test command string:
+```yaml
+# In task_config.yaml
+grading:
+  test_command: "pytest {test_files} -v"
+```
 
+Or in the scenario:
 ```python
 AgentPatchGrader.grade(
     weight=1.0,
-    problem_id="my_task",
+    problem_id="my-task",
     test_files=["test_foo.py"],
-    test_command="pytest {test_files}",  # Or: yarn test, go test, make test
+    test_command="yarn test {test_files}",
 )
 ```
 
 ### Advanced: Custom test logic
 
-If you are switching to a different software project (e.g., TypeScript, Java, Rust), the default `run_tests()` method in `grading/runner.py` will likely need to change. The default implementation runs a single shell command and checks its exit code, but your project may require a build step, a running server, or other setup before tests can execute.
-
-To customize this, subclass `GradingRunner` and override `run_tests()`. The method receives no arguments -- use `self.working_dir` (the isolated copy of the repo) and `self.test_files`. Return a tuple of `(success: bool, metadata: dict)`.
-
-The following is a sketch for a hypothetical TypeScript project that uses yarn:
+Subclass `GradingRunner` and override `run_tests()`:
 
 ```python
 import subprocess
-import time
 from grading import GradingRunner
 
-class YarnTestRunner(GradingRunner):
+class MyRunner(GradingRunner):
     def run_tests(self) -> tuple[bool, dict]:
-        # Build the project first
-        subprocess.run(["yarn", "build"], cwd=self.working_dir, check=True)
-        
-        # Start the dev server (some tests may need it running)
-        server = subprocess.Popen(["yarn", "start"], cwd=self.working_dir)
-        time.sleep(5)
-        
-        # Run the test suite
+        # The agent may have made git commits — the working tree
+        # reflects whatever state the agent left it in
         result = subprocess.run(
             ["yarn", "test", *self.test_files],
             cwd=self.working_dir,
             capture_output=True,
             text=True,
         )
-        
-        # Clean up
-        server.terminate()
-        
         return result.returncode == 0, {
             "exit_code": result.returncode,
             "stdout": result.stdout,
@@ -257,50 +219,27 @@ class YarnTestRunner(GradingRunner):
         }
 ```
 
-To use your custom runner, update `grading/graders.py` to instantiate it instead of the default `GradingRunner` in `AgentPatchGrader.compute_score()`.
-
 ---
 
-## Updating Package Name
+## Differences from Original Template
 
-Edit `pyproject.toml`:
+| Aspect | Original (`coding-template`) | Git-Enabled (`coding-template-with-git`) |
+|--------|-----|-----|
+| Agent git access | None (`.git` locked) | Full (`log`, `blame`, `diff`, `commit`) |
+| Patch extraction | Runtime (`setup_task()`) | Build time (`setup_git.py`) |
+| `setup_task()` args | `task_id, base, test, golden` | `task_id, checkout` |
+| Branch config | Hardcoded in scenarios | `task_config.yaml` |
+| `.git` ownership | root (locked) | ubuntu (agent-accessible) |
+| Solution hidden via | `.git` permissions | Branch deletion + `git gc` |
+| Validation (`golden_pass`) | Checks out golden branch | Applies `golden.patch` |
 
-```toml
-[project]
-name = "your-company-evaluation-framework"
-description = "AI Agent Evaluation Framework for [Your Project]"
-```
+### Migration from original template
 
----
+To convert a task from the original template:
 
-## Database Configuration
-
-If your tests need a database, set it up in the test command or Dockerfile.
-
-**MySQL:**
-```python
-drop_cmd = f"mysql -u root -p{password} -e 'DROP DATABASE IF EXISTS {db_name}'"
-create_cmd = f"mysql -u root -p{password} -e 'CREATE DATABASE {db_name}'"
-```
-
-**MongoDB:**
-```python
-drop_cmd = f"mongo {db_name} --eval 'db.dropDatabase()'"
-```
-
----
-
-## User Context
-
-If your project doesn't run as `ubuntu`:
-
-```python
-# In tools/bash.py - remove sudo wrapper
-subprocess.run(["bash", "-lc", command], ...)
-
-# Or use a different user
-subprocess.run(["sudo", "-u", "youruser", "bash", "-lc", command], ...)
-```
+1. Add entry to `task_config.yaml` (move branch names there)
+2. Simplify `setup_task()` call (remove `base`, `test`, `golden` args)
+3. The grading logic stays identical
 
 ---
 
@@ -308,9 +247,11 @@ subprocess.run(["sudo", "-u", "youruser", "bash", "-lc", command], ...)
 
 | File | Purpose |
 |------|---------|
-| `tasks/*.py` | Task definitions |
+| `task_config.yaml` | Git/branch configuration per task |
+| `tasks/*.py` | Task definitions (scenarios) |
 | `grading/graders.py` | Grading logic |
 | `grading/runner.py` | Test execution |
+| `build_scripts/setup_git.py` | Build-time git setup |
 | `Dockerfile.hud` | Build configuration |
 | `env.py` | MCP server and tools |
 | `imagectl4.py` | Build, validate, run, push, and JSON generation |

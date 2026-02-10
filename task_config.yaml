@@ -1,0 +1,68 @@
+# task_config.yaml - Per-task git worktree configuration
+#
+# This file controls what the agent sees in the git repo and how grading works.
+# At Docker build time, setup_git.py reads this file and:
+#   1. Extracts test/golden patches into /home/root/patches/
+#   2. Deletes grading branches from the repo
+#   3. Prunes git history (optional)
+#   4. Leaves .git accessible to the agent
+#
+# The agent gets a real git repo with full history but no access to the solution.
+
+tasks:
+  sample-json-bug:
+    worktree:
+      # Branch the agent starts on (checked out at scenario start)
+      checkout: server_fix_baseline
+
+      # Branches visible to the agent (optional)
+      # If omitted: ALL branches except grading branches are kept
+      include_branches:
+        - server_fix_baseline
+
+      # Optional: truncate history to commits before this date (ISO 8601)
+      # Useful for "the repo as it was on date X" scenarios
+      # snapshot_before: "2026-01-15T00:00:00Z"
+
+    grading:
+      # These branches are used to generate patches, then DELETED from the repo
+      test_branch: server_fix_test
+      golden_branch: server_fix_golden
+
+      # Test files injected by test.patch at grading time
+      test_files:
+        - test_server.py
+
+      # Test command (optional, default: "uv run pytest {test_files}")
+      # test_command: "uv run pytest {test_files}"
+
+
+# ==============================================================================
+# TEMPLATE: Add your tasks below. Example multi-task configuration:
+# ==============================================================================
+#
+# tasks:
+#   fix-auth-bug:
+#     worktree:
+#       checkout: main
+#       include_branches:
+#         - main
+#         - develop
+#       snapshot_before: "2026-02-01T00:00:00Z"
+#     grading:
+#       test_branch: auth_fix_test
+#       golden_branch: auth_fix_golden
+#       test_files:
+#         - tests/test_auth.py
+#       test_command: "pytest {test_files} -v"
+#
+#   fix-api-bug:
+#     worktree:
+#       checkout: main
+#       # No include_branches = keep all non-grading branches
+#     grading:
+#       test_branch: api_fix_test
+#       golden_branch: api_fix_golden
+#       test_files:
+#         - tests/test_api.py
+#         - tests/test_integration.py

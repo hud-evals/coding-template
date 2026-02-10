@@ -73,16 +73,26 @@ RUN --mount=type=secret,id=CODING_GITHUB_TOKEN,uid=1000 \
 
 WORKDIR /home/ubuntu/${FOLDER_NAME}
 
-# Protect .git from agent access (agent runs as ubuntu/uid 1000, MCP server runs as root)
-# This allows setup_problem to:
-# 1. Generate patches at runtime (base→test, base→golden)
-# 2. Checkout the baseline branch
-# The agent cannot access git history or checkout solution branches
+# Git-enabled template: agent gets full git access.
+# At build time we extract test/golden patches, then delete those branches.
+# The agent can use git log, git blame, git diff, etc. but cannot see the solution.
 USER root
 RUN mkdir -p /home/root/patches && \
-    chown -R root:root /home/ubuntu/${FOLDER_NAME}/.git && \
-    chmod -R 700 /home/ubuntu/${FOLDER_NAME}/.git && \
     git config --global --add safe.directory /home/ubuntu/${FOLDER_NAME}
+
+# Copy build scripts and task config, then run git setup
+COPY build_scripts/ /build_scripts/
+COPY task_config.yaml /build_scripts/task_config.yaml
+RUN python3 /build_scripts/setup_git.py \
+    /home/ubuntu/${FOLDER_NAME} \
+    /home/root/patches \
+    /build_scripts/task_config.yaml
+
+# Ensure agent owns the project dir (including .git)
+RUN chown -R ubuntu:ubuntu /home/ubuntu/${FOLDER_NAME}
+# Patches stay root-only (agent cannot read test/golden patches)
+RUN chmod -R 700 /home/root/patches
+
 USER ubuntu
 
 # 1) Install language runtime/compiler
@@ -144,8 +154,7 @@ USER ubuntu
 #   C++: mkdir build && cd build && cmake .. && make
 
 # 6) Configure environment files
-# Copy and customize your environment configuration
-COPY build_scripts/ /build_scripts/
+# build_scripts/ was already copied above for setup_git.py
 RUN python3 /build_scripts/alter_env_files.py
 
 # === End of PROJECT SETUP section ===

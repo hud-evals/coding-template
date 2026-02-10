@@ -61,8 +61,11 @@ class AgentPatchGrader(Grader):
 
         score = runner.grade()
 
-        # when testing with baseline fail, we want to ensure that the baseline actually fails, so we invert the score
+        # when testing with baseline fail, we want to ensure that the baseline
+        # actually fails, so we invert the score
         if validate_mode == "baseline_fail":
             score = 1.0 if score == 0.0 else 0.0
 
-        return (score, {})
+        # Return test output metadata so failures can be diagnosed
+        metadata = getattr(runner, "last_metadata", {})
+        return (score, metadata)

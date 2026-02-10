@@ -3,9 +3,13 @@ Grading runner for agent patch testing.
 
 Workflow:
 1. grade() calls:
-   - Copy repo, apply test.patch
+   - Copy repo (including .git), apply test.patch
    - run_tests() [customize this]
    - Returns score (0.0 or 1.0)
+
+In the git-enabled template, the agent's repo has a fully accessible .git directory.
+The grading runner copies the entire repo (including .git and any agent commits),
+applies the test.patch on top, and runs the test suite.
 """
 
 import logging
@@ -50,6 +54,7 @@ class GradingRunner:
         self.patches_dir = patches_dir
         self.repo_path = repo_path or f"/home/ubuntu/{os.environ.get('FOLDER_NAME', 'project')}"
         self.working_dir = f"/tmp/grading_{uuid.uuid4()}"
+        self.last_metadata: dict = {}
 
     @property
     def test_patch(self) -> str:
@@ -62,24 +67,54 @@ class GradingRunner:
         Returns:
             1.0 if tests pass, 0.0 otherwise
         """
-        # Copy repo to grading workspace
+        # Copy repo to grading workspace (includes .git if present)
         logger.info(f"Copying repo to {self.working_dir}")
         subprocess.run(["cp", "-rT", self.repo_path, self.working_dir], check=True)
 
         # Apply test patch (adds test files)
         logger.info(f"Applying test patch: {self.test_patch}")
         with open(self.test_patch) as f:
-            subprocess.run(
-                ["git", "apply"],
+            patch_content = f.read()
+
+        if patch_content.strip():
+            result = subprocess.run(
+                ["git", "-c", f"safe.directory={self.working_dir}", "apply", "--allow-empty"],
                 cwd=self.working_dir,
-                input=f.read().encode(),
-                check=True,
+                input=patch_content.encode(),
+                capture_output=True,
+                text=True,
             )
+            if result.returncode != 0:
+                logger.error(f"git apply failed: {result.stderr}")
+                # Try without git (plain patch) as fallback
+                result = subprocess.run(
+                    ["patch", "-p1", "--no-backup-if-mismatch"],
+                    cwd=self.working_dir,
+                    input=patch_content.encode(),
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0:
+                    logger.error(f"patch fallback also failed: {result.stderr}")
+        else:
+            logger.info("Test patch is empty, skipping apply")
 
         # Run tests
         success, metadata = self.run_tests()
-        
-        return 1.0 if success else 0.0
+        self.last_metadata = metadata
+
+        score = 1.0 if success else 0.0
+        logger.info(
+            "Tests %s (score=%.1f, exit_code=%s)",
+            "PASSED" if success else "FAILED",
+            score,
+            metadata.get("exit_code"),
+        )
+        if not success:
+            logger.info("Test stdout:\n%s", metadata.get("stdout", "")[-2000:])
+            logger.info("Test stderr:\n%s", metadata.get("stderr", "")[-2000:])
+
+        return score
 
     # =========================================================================
     # CUSTOMIZE THIS
