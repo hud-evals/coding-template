@@ -9,23 +9,55 @@ Agents can use git log, git blame, git diff, git commit, etc.
 Grading branches (test/golden) are removed at build time so agents cannot peek
 at the solution.
 
+Supports dual-mode operation:
+- HUD mode (default): scenarios with yield-based setup/grading
+- Taiga mode (IS_TAIGA=1): tool-based setup_problem/grade_problem
+
 Tools prefixed with _ are internal (hidden from agent, used by scenarios).
 """
 
+import inspect
 import logging
 import os
 import subprocess
 from pathlib import Path
+from typing import Any, Optional
 
 from hud import Environment
+from hud.types import MCPToolResult
 
-from grading import ValidateMode
+from grading import AgentPatchGrader, ValidateMode
 from tools import BashTool, EditTool, ToolError
 
 logger = logging.getLogger(__name__)
 
+# Platform detection
+IS_TAIGA = os.environ.get("IS_TAIGA") == "1"
+
+
+class CodingEnvironment(Environment):
+    """Environment subclass that strips extra tool parameters.
+
+    Taiga may send fields not in our tool function signatures. FastMCP's
+    Pydantic validation rejects unknown params, which surfaces as a
+    -32602 JSON-RPC error. This override strips extras before they reach
+    FastMCP's validation layer.
+    """
+
+    async def _execute_tool(self, name: str, arguments: dict[str, Any]) -> MCPToolResult:
+        # For local tools, strip params not in the function signature
+        tool = self._tool_manager._tools.get(name)
+        if tool and hasattr(tool, "fn"):
+            known = set(inspect.signature(tool.fn).parameters.keys())
+            extra = set(arguments.keys()) - known
+            if extra:
+                logger.info("Stripping unknown params from %s: %s", name, extra)
+                arguments = {k: v for k, v in arguments.items() if k in known}
+        return await super()._execute_tool(name, arguments)
+
+
 # Create the environment
-env = Environment("coding")
+env = CodingEnvironment("coding")
 
 # Initialize tools
 _bash_tool: BashTool | None = None
@@ -233,6 +265,148 @@ Use the tools provided to complete the following task:
 
 {description}
 """
+
+
+# ============================================================================
+# Task config loader (used by both HUD scenarios and Taiga tools)
+# ============================================================================
+
+
+def _load_task_config() -> dict:
+    """Load task_config.yaml and return the tasks dict.
+
+    Tries to load from the build-time copy first, then falls back to
+    the MCP server directory.
+    """
+    import yaml
+
+    for path in ["/build_scripts/task_config.yaml", "/mcp_server/task_config.yaml"]:
+        if os.path.exists(path):
+            with open(path) as f:
+                config = yaml.safe_load(f)
+            return config.get("tasks", {})
+    logger.warning("task_config.yaml not found, returning empty config")
+    return {}
+
+
+# ============================================================================
+# Taiga Mode: setup_problem / grade_problem tools
+# ============================================================================
+
+if IS_TAIGA:
+    logger.info("Taiga mode enabled (IS_TAIGA=1)")
+
+    # Load task config once at import time
+    _TASK_CONFIG = _load_task_config()
+
+    @env.tool(output_schema=None)
+    async def setup_problem(
+        problem_id: str,
+        task_prompt: Optional[str] = None,
+        rubric: Optional[Any] = None,
+        system_prompt: Optional[str] = None,
+        selected_folder: Optional[str] = None,
+        grader_metadata: Optional[Any] = None,
+        metadata: Optional[Any] = None,
+        preloaded_files: Optional[Any] = None,
+        output_directory: Optional[str] = None,
+        domain_allowlist: Optional[Any] = None,
+        enable_anthropic_api: Optional[bool] = None,
+        extra_fields: Optional[Any] = None,
+    ) -> str:
+        """Setup the problem environment for the given task id.
+
+        Checks out the baseline branch and returns the task prompt.
+        Patches are pre-extracted at build time — no branch manipulation needed.
+        """
+        logger.info("[TAIGA] setup_problem called with problem_id: %s", problem_id)
+
+        task_cfg = _TASK_CONFIG.get(problem_id)
+        if not task_cfg:
+            return f"Unknown problem_id: {problem_id}. Known: {list(_TASK_CONFIG.keys())}"
+
+        checkout = task_cfg["worktree"]["checkout"]
+        setup_task(task_id=problem_id, checkout=checkout)
+
+        prompt = make_prompt(
+            task_cfg.get("prompt", f"Fix the bugs in the project. Task: {problem_id}")
+        )
+
+        # Prefer Taiga-provided task_prompt if available, otherwise use ours
+        return task_prompt if task_prompt else prompt
+
+    @env.tool(output_schema=None)
+    async def grade_problem(
+        problem_id: str,
+        transcript: str = "",
+        selected_folder: Optional[str] = None,
+        grader_metadata: Optional[Any] = None,
+        metadata: Optional[Any] = None,
+        task_prompt: Optional[str] = None,
+        rubric: Optional[Any] = None,
+        system_prompt: Optional[str] = None,
+        preloaded_files: Optional[Any] = None,
+        output_directory: Optional[str] = None,
+        domain_allowlist: Optional[Any] = None,
+        enable_anthropic_api: Optional[bool] = None,
+        extra_fields: Optional[Any] = None,
+    ) -> dict:
+        """Grade the problem by running pytest on the agent's solution.
+
+        Copies the repo (with agent's changes), applies test.patch to add
+        hidden test files, then runs pytest. Returns subscores/weights
+        for Taiga's grading infrastructure.
+        """
+        logger.info("[TAIGA] grade_problem called for %s", problem_id)
+
+        task_cfg = _TASK_CONFIG.get(problem_id)
+        if not task_cfg:
+            return {
+                "subscores": {"test_pass": 0.0},
+                "weights": {"test_pass": 1},
+                "metadata": {"error": f"Unknown problem_id: {problem_id}"},
+            }
+
+        grading_cfg = task_cfg.get("grading", {})
+        test_files = grading_cfg.get("test_files", [])
+        test_command = grading_cfg.get("test_command", "pytest {test_files} -v")
+
+        # Debug: check patch state before grading
+        patches_dir = os.environ.get("PATCHES_DIR", "/home/root/patches")
+        task_patches = os.path.join(patches_dir, problem_id)
+        for pname in ["test.patch", "golden.patch"]:
+            ppath = os.path.join(task_patches, pname)
+            if os.path.exists(ppath):
+                logger.info("[TAIGA] %s: %d bytes", pname, os.path.getsize(ppath))
+            else:
+                logger.error("[TAIGA] %s: NOT FOUND at %s", pname, ppath)
+
+        try:
+            score, grade_metadata = AgentPatchGrader.compute_score(
+                test_files=test_files,
+                problem_id=problem_id,
+                test_command=test_command,
+            )
+            logger.info("[TAIGA] Grading complete: score=%s", score)
+        except Exception as e:
+            logger.error("[TAIGA] Grading failed: %s", e, exc_info=True)
+            score = 0.0
+            grade_metadata = {"error": str(e)}
+
+        return {
+            "subscores": {"test_pass": score},
+            "weights": {"test_pass": 1},
+            "metadata": {
+                "score": score,
+                "grader": "AgentPatchGrader",
+                **grade_metadata,
+            },
+        }
+
+    logger.info("[TAIGA] Registered setup_problem and grade_problem tools")
+
+else:
+    logger.info("HUD mode (default)")
 
 
 # ============================================================================

@@ -190,9 +190,19 @@ RUN chmod 777 /root
 ARG HINTS="none"
 ENV HINTS=$HINTS
 
+# Taiga platform support: set IS_TAIGA=1 to register setup_problem/grade_problem tools
+ARG IS_TAIGA="0"
+ENV IS_TAIGA=$IS_TAIGA
+
 # PROBLEM_ID is set at runtime via scenario args, not at build time
 # It selects which patches to use from /home/root/patches/{problem_id}/
 ENV PROBLEM_ID=""
 
+# Copy task_config.yaml to MCP server dir (needed by Taiga mode at runtime)
+COPY ./task_config.yaml /mcp_server/task_config.yaml
+
 # Run the HUD MCP server
+# _HUD_DEV_CHILD=1 skips the file-watcher/hot-reload loop in hud dev,
+# which otherwise restarts the server when the agent modifies files during grading.
+ENV _HUD_DEV_CHILD=1
 CMD ["hud", "dev", "env:env", "--stdio"]

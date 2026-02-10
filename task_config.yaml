@@ -33,8 +33,18 @@ tasks:
       test_files:
         - test_server.py
 
-      # Test command (optional, default: "uv run pytest {test_files}")
-      # test_command: "uv run pytest {test_files}"
+      # Test command (optional, default: "pytest {test_files} -v")
+      # test_command: "pytest {test_files} -v"
+
+    # Prompt shown to the agent (used by both HUD scenarios and Taiga tools)
+    prompt: |
+      Fix the JSON serialization bug in server.py.
+
+      The API server's responses are malformed. When you make a request to any endpoint,
+      the response body is not valid JSON - it looks like a Python dict representation
+      instead of proper JSON (e.g., single quotes instead of double quotes).
+
+      Hint: use git log and git blame to investigate when the bug was introduced.
 
 
 # ==============================================================================

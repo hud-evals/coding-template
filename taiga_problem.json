@@ -1,0 +1,18 @@
+{
+  "problem_set": {
+    "owner": "hud",
+    "name": "coding-template-with-git-sample",
+    "description": "Git-enabled coding template - sample JSON serialization bug task",
+    "problems": [
+      {
+        "image": "your-registry/your-image:tag",
+        "startup_command": "hud dev env:env --stdio",
+        "id": "sample-json-bug",
+        "required_tools": ["str_replace_editor", "bash"],
+        "domain_allowlist": [],
+        "system_prompt": "You are a software engineer debugging a codebase. You have access to bash and file editing tools. The repository has full git history available — use git log, git blame, git diff, etc. to investigate issues. Fix the code and verify your fix works.",
+        "task_prompt": "You will be working on a task for project.\nThe repository has already been cloned in /home/ubuntu/project.\nYou have full git access — use git log, git blame, git diff, etc. to investigate.\n\nUse the tools provided to complete the following task:\n\nFix the JSON serialization bug in server.py.\n\nThe API server's responses are malformed. When you make a request to any endpoint,\nthe response body is not valid JSON - it looks like a Python dict representation\ninstead of proper JSON (e.g., single quotes instead of double quotes).\n\nHint: use git log and git blame to investigate when the bug was introduced."
+      }
+    ]
+  }
+}

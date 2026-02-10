@@ -42,6 +42,8 @@ tasks:
       test_branch: test               # Hidden: contains test files
       golden_branch: golden           # Hidden: contains solution
       test_files: ["tests/test_fix.py"]
+    prompt: |                          # Task prompt (used by both HUD and Taiga)
+      Fix the bug in foo.py...
 ```
 
 **3. Define Your Scenario**
@@ -78,7 +80,7 @@ uv run imagectl4.py -r --ids my-task            # Run agent
 uv run imagectl4.py -bvr --ids my-task          # All three
 ```
 
-### Remote
+### Remote (HUD Platform)
 
 **1. Deploy to Platform**
 
@@ -94,12 +96,30 @@ For private repos, add: `--secret id=CODING_GITHUB_TOKEN,env=CODING_GITHUB_TOKEN
 2. Create a taskset with your scenario name
 3. Run with your preferred model and step limit
 
+### Remote (Taiga Platform)
+
+This template also supports the Taiga evaluation platform. Build with `IS_TAIGA=1`:
+
+```bash
+# Build for Taiga
+docker build -f Dockerfile.hud --build-arg IS_TAIGA=1 \
+  -t your-registry/your-image:tag .
+
+# Push to your registry
+docker push your-registry/your-image:tag
+```
+
+When `IS_TAIGA=1`, the environment registers `setup_problem` and `grade_problem` tools instead of using HUD scenarios. Taiga provides `bash` and `str_replace_editor` tools natively.
+
+Update `taiga_problem.json` with your image URL and task IDs, then submit to the Taiga platform.
+
 ### Build Arguments
 
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `REPO_URL` | `https://github.com/hud-evals/coding-template-sample` | Repository to clone |
 | `FOLDER_NAME` | `project` | Destination folder in container |
+| `IS_TAIGA` | `0` | Set to `1` for Taiga platform support |
 
 ## Key Concepts
 
@@ -142,6 +162,8 @@ tasks:
       golden_branch: golden        # Hidden solution branch
       test_files: ["test_foo.py"]  # Test files in test branch
       test_command: "..."          # Custom test command (optional)
+    prompt: |                       # Task prompt
+      Fix the bug...
 ```
 
 ### Build-Time Git Setup
@@ -155,7 +177,17 @@ tasks:
 5. Runs `git gc --prune=now --aggressive` to purge deleted objects
 6. Leaves `.git` accessible to the agent
 
-### Tools (in `env.py`)
+### Dual-Mode Operation
+
+The environment supports two platforms:
+
+**HUD Mode** (default): Uses `@env.scenario()` decorators in `tasks/`. Setup and grading happen via the yield-based scenario pattern.
+
+**Taiga Mode** (`IS_TAIGA=1`): Registers `setup_problem` and `grade_problem` as MCP tools. Taiga calls them directly. Task config is read from `task_config.yaml` at runtime.
+
+Both modes share the same underlying `setup_task()` and `AgentPatchGrader` logic.
+
+### Tools
 
 ```python
 @env.tool()
@@ -166,6 +198,8 @@ async def bash(command: str) -> str:
 async def editor(command: str, path: str, ...) -> str:
     """View, create, and edit files."""
 ```
+
+In Taiga mode, `bash` and `editor` are provided natively by the platform (`required_tools: ["str_replace_editor", "bash"]`).
 
 ## Validation
 
@@ -180,6 +214,16 @@ Two modes are tested (both must return `reward = 1.0`):
 - **`baseline_fail`**: Baseline branch has the bug → tests fail → inverted score = 1.0
 - **`golden_pass`**: Baseline + golden.patch applied → tests pass → score = 1.0
 
+## Testing
+
+```bash
+# Unit tests for build-time git setup (no Docker needed)
+uv run --extra dev pytest tests/test_setup_git.py -v
+
+# Full Docker validation
+uv run imagectl4.py -bv --ids sample-json-bug
+```
+
 ## Generate Task JSON
 
 ```bash
@@ -191,15 +235,17 @@ uv run imagectl4.py -j --ids my-task      # Specific scenarios
 
 ```
 coding-template-with-git/
-├── env.py              # Tools + scenario registration
-├── task_config.yaml    # Per-task git/branch configuration
+├── env.py              # Tools + scenario registration + Taiga tools
+├── task_config.yaml    # Per-task git/branch/prompt configuration
+├── taiga_problem.json  # Taiga problem definition template
 ├── tools/              # bash, editor
 ├── grading/            # Grading logic and test runners
-├── tasks/              # Problem definitions
+├── tasks/              # Problem definitions (HUD scenarios)
+├── tests/              # Unit tests for setup_git.py
 ├── build_scripts/
 │   ├── setup_git.py    # Build-time git setup (patch extraction, branch pruning)
 │   └── alter_env_files.py  # Environment file configuration
-├── Dockerfile.hud      # Container config
+├── Dockerfile.hud      # Container config (supports IS_TAIGA build arg)
 ├── imagectl4.py        # Build, validate, run CLI
 └── IMPLEMENTATION_PLAN.md  # Detailed design document
 ```
