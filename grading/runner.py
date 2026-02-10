@@ -80,7 +80,7 @@ class GradingRunner:
             result = subprocess.run(
                 ["git", "-c", f"safe.directory={self.working_dir}", "apply", "--allow-empty"],
                 cwd=self.working_dir,
-                input=patch_content.encode(),
+                input=patch_content,
                 capture_output=True,
                 text=True,
             )
@@ -90,7 +90,7 @@ class GradingRunner:
                 result = subprocess.run(
                     ["patch", "-p1", "--no-backup-if-mismatch"],
                     cwd=self.working_dir,
-                    input=patch_content.encode(),
+                    input=patch_content,
                     capture_output=True,
                     text=True,
                 )

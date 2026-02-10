@@ -4,7 +4,7 @@ This environment provides tools for:
 - Running bash commands in a sandboxed shell
 - Editing files with view/create/edit commands
 
-This template gives agents FULL git access.
+Unlike the standard coding-template, this template gives agents FULL git access.
 Agents can use git log, git blame, git diff, git commit, etc.
 Grading branches (test/golden) are removed at build time so agents cannot peek
 at the solution.
@@ -42,7 +42,7 @@ async def initialize() -> None:
     """Initialize the coding environment tools."""
     global _bash_tool, _edit_tool
 
-    logger.info("Initializing coding environment")
+    logger.info("Initializing git-enabled coding environment")
     _bash_tool = BashTool()
     _edit_tool = EditTool()
     logger.info("Coding environment initialized")
@@ -192,7 +192,7 @@ def setup_task(
                 result = subprocess.run(
                     ["git", "apply", "--allow-empty"],
                     cwd=project_dir,
-                    input=patch_content.encode(),
+                    input=patch_content,
                     capture_output=True,
                     text=True,
                 )

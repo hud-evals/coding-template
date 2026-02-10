@@ -164,8 +164,13 @@ def create_local_branch(repo_dir: str, branch_name: str, source: str = "") -> No
     # Check if local branch already exists
     existing = get_local_branches(repo_dir)
     if branch_name in existing:
-        # Update it to point to the right commit
-        git(repo_dir, "branch", "-f", branch_name, source)
+        # Check if this is the currently checked-out branch
+        current = git(repo_dir, "branch", "--show-current", check=False).stdout.strip()
+        if current == branch_name:
+            # Can't force-update the current branch; reset it instead
+            git(repo_dir, "reset", "--hard", source, check=False)
+        else:
+            git(repo_dir, "branch", "-f", branch_name, source)
     else:
         git(repo_dir, "branch", branch_name, source)
 
@@ -178,7 +183,12 @@ def apply_snapshot(repo_dir: str, branch: str, before_date: str) -> None:
         logger.warning("No commits found before %s on branch %s, skipping snapshot", before_date, branch)
         return
     logger.info("Truncating branch %s to commit %s (before %s)", branch, commit[:8], before_date)
-    git(repo_dir, "branch", "-f", branch, commit)
+    # Check if this is the currently checked-out branch
+    current = git(repo_dir, "branch", "--show-current", check=False).stdout.strip()
+    if current == branch:
+        git(repo_dir, "reset", "--hard", commit, check=False)
+    else:
+        git(repo_dir, "branch", "-f", branch, commit)
 
 
 # ---------------------------------------------------------------------------
