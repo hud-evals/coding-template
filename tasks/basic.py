@@ -2,7 +2,7 @@
 
 Each task is a scenario that handles its own setup and grading.
 
-In this template, the agent has full git access. The setup_task()
+In the git-enabled template, the agent has full git access. The setup_task()
 function just checks out the starting branch — patches were pre-extracted
 at Docker build time.
 """
@@ -15,7 +15,7 @@ from grading import AgentPatchGrader, Grade, ValidateMode
 async def sample_json_bug(hints_enabled: bool = False, validate_mode: ValidateMode | None = None):
     """Fix the JSON serialization bug in server.py."""
 
-    # In this template, setup_task only needs:
+    # In the git-enabled template, setup_task only needs:
     #   task_id: matches the key in task_config.yaml
     #   checkout: the branch the agent starts on
     # Patches (test.patch, golden.patch) are pre-extracted at build time.
