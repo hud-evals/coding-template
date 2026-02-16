@@ -22,6 +22,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import sys
 import tomllib
 from collections.abc import Iterable
@@ -114,7 +115,11 @@ async def run_subprocess(cmd: list[str], prefix: str) -> int:
 async def build_image(image: str) -> bool:
     """Build a single Docker image via ``docker build -t <image> -f Dockerfile.hud .``."""
     logger.info(f"Building image: {image}")
-    cmd = ["docker", "build", "-t", image, "-f", "Dockerfile.hud", "."]
+    cmd = ["docker", "build", "-t", image, "-f", "Dockerfile.hud"]
+    github_token = os.environ.get("CODING_GITHUB_TOKEN")
+    if github_token:
+        cmd.extend(["--secret", "id=CODING_GITHUB_TOKEN,env=CODING_GITHUB_TOKEN"])
+    cmd.append(".")
     rc = await run_subprocess(cmd, prefix="[build]")
     if rc != 0:
         logger.error(f"Build FAILED for {image} (exit code {rc})")
