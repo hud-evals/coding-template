@@ -69,11 +69,23 @@ class GradingRunner:
         # Apply test patch (adds test files)
         logger.info(f"Applying test patch: {self.test_patch}")
         with open(self.test_patch) as f:
-            subprocess.run(
-                ["git", "apply"],
-                cwd=self.working_dir,
-                input=f.read().encode(),
-                check=True,
+            patch_content = f.read()
+        if not patch_content.strip():
+            raise RuntimeError(
+                f"Test patch is empty: {self.test_patch}. "
+                "The test branch likely has no diff from the baseline branch."
+            )
+        result = subprocess.run(
+            ["git", "apply"],
+            cwd=self.working_dir,
+            input=patch_content.encode(),
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"git apply failed (exit {result.returncode}): "
+                f"{result.stderr.strip()}"
             )
 
         # Run tests
