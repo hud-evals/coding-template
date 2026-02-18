@@ -10,12 +10,12 @@ Tools prefixed with _ are internal (hidden from agent, used by scenarios).
 import logging
 import os
 import subprocess
-from pathlib import Path
 
 from hud import Environment
-
+from hud.tools.coding import BashTool, EditTool
+from hud.tools.types import ToolError
+from mcp.types import TextContent
 from grading import ValidateMode
-from tools import BashTool, EditTool, ToolError
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +48,8 @@ async def shutdown() -> None:
     """Clean up the coding environment."""
     global _bash_tool, _edit_tool
 
-    if _bash_tool and _bash_tool._session:
-        _bash_tool._session.stop()
+    if _bash_tool and _bash_tool.session:
+        _bash_tool.session.stop()
 
     _bash_tool = None
     _edit_tool = None
@@ -59,6 +59,15 @@ async def shutdown() -> None:
 # ============================================================================
 # Agent-Visible Tools
 # ============================================================================
+
+
+def _extract_text_from_blocks(blocks: list) -> str:
+    """Extract text content from a list of ContentBlocks."""
+    texts = []
+    for block in blocks:
+        if isinstance(block, TextContent):
+            texts.append(block.text)
+    return "\n".join(texts) if texts else ""
 
 
 @env.tool()
@@ -75,17 +84,16 @@ async def bash(
     Returns:
         The command output or error message
     """
+    global _bash_tool
+
     if _bash_tool is None:
-        return "Error: Bash tool not initialized"
+        _bash_tool = BashTool()
 
     try:
-        result = await _bash_tool(command=command, restart=restart)
-        output = result.output or ""
-        if result.error:
-            output = f"{output}\n{result.error}".strip() if output else result.error
-        return output or result.system or ""
+        blocks = await _bash_tool(command=command, restart=restart)
+        return _extract_text_from_blocks(blocks)
     except ToolError as e:
-        return f"Error: {e.message}"
+        return f"Error: {e}"
 
 
 @env.tool()
@@ -112,11 +120,13 @@ async def editor(
     Returns:
         The command result or file content
     """
+    global _edit_tool
+
     if _edit_tool is None:
-        return "Error: Editor tool not initialized"
+        _edit_tool = EditTool()
 
     try:
-        result = await _edit_tool(
+        blocks = await _edit_tool(
             command=command,  # type: ignore
             path=path,
             file_text=file_text,
@@ -125,11 +135,9 @@ async def editor(
             new_str=new_str,
             insert_line=insert_line,
         )
-        if result.error:
-            return f"Error: {result.error}"
-        return result.output or ""
+        return _extract_text_from_blocks(blocks)
     except ToolError as e:
-        return f"Error: {e.message}"
+        return f"Error: {e}"
 
 
 # ============================================================================
@@ -139,7 +147,7 @@ async def editor(
 
 def setup_task(task_id: str, base: str, test: str, golden: str, validate_mode: ValidateMode | None = None) -> None:
     """Set up environment for a task: checkout baseline, generate patches.
-    
+
     Args:
         task_id: Unique identifier for the task (used for patch directory)
         base: Baseline branch name
@@ -148,14 +156,14 @@ def setup_task(task_id: str, base: str, test: str, golden: str, validate_mode: V
     """
     project_dir = _get_project_dir()
     patches_dir = os.environ.get("PATCHES_DIR", "/home/root/patches")
-    
+
     # Set PROBLEM_ID env var for grading runner
     os.environ["PROBLEM_ID"] = task_id
-    
+
     # Generate patches at runtime
     task_patches_dir = os.path.join(patches_dir, task_id)
     os.makedirs(task_patches_dir, exist_ok=True)
-    
+
     # Generate test.patch (base → test)
     logger.info("Generating test.patch: %s → %s", base, test)
     result = subprocess.run(
@@ -166,7 +174,7 @@ def setup_task(task_id: str, base: str, test: str, golden: str, validate_mode: V
     )
     with open(os.path.join(task_patches_dir, "test.patch"), "w") as f:
         f.write(result.stdout)
-    
+
     # Generate golden.patch (base → golden)
     logger.info("Generating golden.patch: %s → %s", base, golden)
     result = subprocess.run(
@@ -177,7 +185,7 @@ def setup_task(task_id: str, base: str, test: str, golden: str, validate_mode: V
     )
     with open(os.path.join(task_patches_dir, "golden.patch"), "w") as f:
         f.write(result.stdout)
-    
+
     # Checkout baseline branch
     if validate_mode == "golden_pass":
         logger.info("Checking out golden branch (validation): %s", golden)
@@ -200,22 +208,20 @@ def setup_task(task_id: str, base: str, test: str, golden: str, validate_mode: V
         subprocess.run(["chown", "-R", "ubuntu:ubuntu", project_dir], capture_output=True)
         # Keep .git protected
         subprocess.run(["chown", "-R", "root:root", os.path.join(project_dir, ".git")], capture_output=True)
-    
+
     os.chdir(project_dir)
-
-
 
 
 def make_prompt(description: str) -> str:
     """Generate a prompt from a task description.
-    
+
     Args:
         description: The task description
-        
+
     Returns:
         Formatted prompt string
     """
-    folder_name = os.environ.get('FOLDER_NAME', 'project')
+    folder_name = os.environ.get("FOLDER_NAME", "project")
     return f"""You will be working on a task for {folder_name}.
 The repository has already been cloned in /home/ubuntu/{folder_name}.
 

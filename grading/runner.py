@@ -66,6 +66,21 @@ class GradingRunner:
         logger.info(f"Copying repo to {self.working_dir}")
         subprocess.run(["cp", "-rT", self.repo_path, self.working_dir], check=True)
 
+        # Refresh git index after cp (stat info is stale in the copy)
+        refresh = subprocess.run(
+            ["git", "update-index", "--refresh"],
+            cwd=self.working_dir,
+            capture_output=True,
+            text=True,
+        )
+        if refresh.returncode != 0:
+            logger.warning(
+                f"git update-index --refresh failed (exit {refresh.returncode}): "
+                f"{refresh.stderr.strip()}"
+            )
+        else:
+            logger.info("Git index refreshed")
+
         # Apply test patch (adds test files)
         logger.info(f"Applying test patch: {self.test_patch}")
         with open(self.test_patch) as f:
@@ -75,14 +90,23 @@ class GradingRunner:
                 f"Test patch is empty: {self.test_patch}. "
                 "The test branch likely has no diff from the baseline branch."
             )
+
+        patch_lines = patch_content.splitlines()
+        logger.info(
+            f"Patch stats: {len(patch_lines)} lines, "
+            f"files: {[l for l in patch_lines if l.startswith('diff --git')]}"
+        )
+
         result = subprocess.run(
-            ["git", "apply"],
+            ["git", "apply", "--verbose"],
             cwd=self.working_dir,
-            input=patch_content.encode(),
+            input=patch_content,
             capture_output=True,
             text=True,
         )
         if result.returncode != 0:
+            logger.error(f"git apply stdout: {result.stdout.strip()}")
+            logger.error(f"git apply stderr: {result.stderr.strip()}")
             raise RuntimeError(
                 f"git apply failed (exit {result.returncode}): "
                 f"{result.stderr.strip()}"
