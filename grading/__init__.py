@@ -2,7 +2,7 @@
 
 from .graders import AgentPatchGrader
 from .runner import GradingRunner
-from .spec import Grade, Grader, SubGrade
+from .spec import Grade, Grader, SubGrade, ValidateMode
 
 __all__ = [
     "AgentPatchGrader",
@@ -10,4 +10,5 @@ __all__ = [
     "Grader",
     "GradingRunner",
     "SubGrade",
+    "ValidateMode",
 ]
