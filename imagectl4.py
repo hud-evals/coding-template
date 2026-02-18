@@ -3,14 +3,23 @@
 Build, validate, run, push Docker images and generate metadata JSON
 for the coding-template environment.
 
-Actions (flags can be combined, e.g. -bvr):
+Actions:
   -b/--build:     Build Docker image (docker build -t <image> -f Dockerfile.hud .)
   -v/--validate:  Validate scenarios (baseline_fail + golden_pass, 0 agent steps)
   -r/--run:       Run an agent against scenarios
   -p/--push:      Push Docker image to registry
   -j/--json:      Generate problem-metadata.json
 
-Execution order: build -> validate -> run -> push -> json
+-b and -v/-r are mutually exclusive. Extra args after -- are forwarded
+to the active action:
+
+  Build with extra docker build args:
+    uv run imagectl4.py -b -- --no-cache --build-arg REPO_URL=https://...
+
+  Validate with extra docker run args:
+    uv run imagectl4.py -v -- -e MY_VAR=value -v /host/path:/ctr/path
+
+-p and -j can be combined with either side.
 
 Parallelism uses asyncio throughout. Validation and run tasks for
 different scenario IDs execute concurrently via asyncio.gather.
@@ -112,10 +121,11 @@ async def run_subprocess(cmd: list[str], prefix: str) -> int:
 # ============================================================================
 
 
-async def build_image(image: str) -> bool:
+async def build_image(image: str, *, extra_args: list[str] | None = None) -> bool:
     """Build a single Docker image via ``docker build -t <image> -f Dockerfile.hud .``."""
     logger.info(f"Building image: {image}")
     cmd = ["docker", "build", "-t", image, "-f", "Dockerfile.hud"]
+    cmd.extend(extra_args or [])
     github_token = os.environ.get("CODING_GITHUB_TOKEN")
     if github_token:
         cmd.extend(["--secret", "id=CODING_GITHUB_TOKEN,env=CODING_GITHUB_TOKEN"])
@@ -153,6 +163,7 @@ async def validate_scenario(
     validate_mode: str,
     *,
     hints_enabled: bool = False,
+    docker_args: list[str] | None = None,
 ) -> tuple[str, str, float | None]:
     """Validate a single scenario + mode by running an eval with 0 agent steps.
 
@@ -167,7 +178,7 @@ async def validate_scenario(
     logger.info(f"Validating: {label}")
 
     env = Environment("coding")
-    env.connect_image(image)
+    env.connect_image(image, docker_args=docker_args)
 
     try:
         task = env(scenario_id, validate_mode=validate_mode, hints_enabled=hints_enabled)
@@ -187,6 +198,7 @@ async def validate_all(
     scenario_ids: list[str],
     *,
     hints_enabled: bool = False,
+    docker_args: list[str] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Validate all scenarios with both ``baseline_fail`` and ``golden_pass`` modes.
 
@@ -196,7 +208,7 @@ async def validate_all(
         (passed_descriptions, failed_descriptions)
     """
     coros = [
-        validate_scenario(image, sid, mode, hints_enabled=hints_enabled)
+        validate_scenario(image, sid, mode, hints_enabled=hints_enabled, docker_args=docker_args)
         for sid in scenario_ids
         for mode in VALIDATE_MODES
     ]
@@ -233,6 +245,7 @@ async def run_scenario(
     max_steps: int,
     *,
     hints_enabled: bool = False,
+    docker_args: list[str] | None = None,
 ) -> tuple[str, float | None]:
     """Run an agent against a scenario.
 
@@ -242,7 +255,7 @@ async def run_scenario(
     logger.info(f"Running scenario: {scenario_id} (max_steps={max_steps}, hints={hints_enabled})")
 
     env = Environment("coding")
-    env.connect_image(image)
+    env.connect_image(image, docker_args=docker_args)
 
     try:
         task = env(scenario_id, hints_enabled=hints_enabled)
@@ -263,13 +276,14 @@ async def run_all(
     max_steps: int,
     *,
     hints_enabled: bool = False,
+    docker_args: list[str] | None = None,
 ) -> tuple[list[tuple[str, float]], list[tuple[str, float | None]]]:
     """Run all scenarios concurrently with an agent.
 
     Returns:
         (succeeded, failed)  — each entry is (scenario_id, reward).
     """
-    coros = [run_scenario(image, sid, max_steps, hints_enabled=hints_enabled) for sid in scenario_ids]
+    coros = [run_scenario(image, sid, max_steps, hints_enabled=hints_enabled, docker_args=docker_args) for sid in scenario_ids]
     results = await asyncio.gather(*coros, return_exceptions=True)
 
     succeeded: list[tuple[str, float]] = []
@@ -370,7 +384,11 @@ async def async_main(args: argparse.Namespace) -> int:
             return 1
 
     hints_enabled: bool = args.hints
+    extra_args: list[str] = args.docker_args or []
     has_failures = False
+
+    if extra_args:
+        logger.info(f"Extra args after '--': {extra_args}")
 
     # Resolve scenario IDs: use --ids if given, otherwise auto-discover all.
     scenario_ids: list[str] = args.ids or []
@@ -386,7 +404,7 @@ async def async_main(args: argparse.Namespace) -> int:
 
     # --- Build ---
     if args.build:
-        ok = await build_image(image)
+        ok = await build_image(image, extra_args=extra_args or None)
         if not ok:
             return 1
 
@@ -397,7 +415,7 @@ async def async_main(args: argparse.Namespace) -> int:
             f"× {len(VALIDATE_MODES)} modes ..."
         )
         passed, failed = await validate_all(
-            image, scenario_ids, hints_enabled=hints_enabled,
+            image, scenario_ids, hints_enabled=hints_enabled, docker_args=extra_args or None,
         )
 
         logger.info("")
@@ -415,7 +433,7 @@ async def async_main(args: argparse.Namespace) -> int:
             f"(max_steps={args.max_steps}) ..."
         )
         succeeded, failed_runs = await run_all(
-            image, scenario_ids, args.max_steps, hints_enabled=hints_enabled,
+            image, scenario_ids, args.max_steps, hints_enabled=hints_enabled, docker_args=extra_args or None,
         )
 
         logger.info("")
@@ -518,13 +536,30 @@ def main(argv: Iterable[str] | None = None) -> int:
         help="Max agent steps for --run (default: 20)",
     )
 
-    args = parser.parse_args(list(argv) if argv is not None else None)
+    raw_argv = list(argv) if argv is not None else sys.argv[1:]
+    if "--" in raw_argv:
+        split_idx = raw_argv.index("--")
+        our_argv = raw_argv[:split_idx]
+        docker_args = raw_argv[split_idx + 1:]
+    else:
+        our_argv = raw_argv
+        docker_args = []
+
+    args = parser.parse_args(our_argv)
+    args.docker_args = docker_args
 
     if not any([args.build, args.push, args.validate, args.run, args.json]):
         logger.warning(
             "No action flags provided (-b, -p, -v, -r, -j). Nothing to do."
         )
         return 0
+
+    if args.build and (args.validate or args.run):
+        if docker_args:
+            parser.error(
+                "-b and -v/-r are mutually exclusive when passing args after --. "
+                "Run build and validate/run as separate commands."
+            )
 
     return asyncio.run(async_main(args))
 
