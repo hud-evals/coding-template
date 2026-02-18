@@ -67,12 +67,7 @@ RUN --mount=type=secret,id=CODING_GITHUB_TOKEN,uid=1000 \
         CODING_GITHUB_TOKEN=$(cat /run/secrets/CODING_GITHUB_TOKEN) && \
         git clone https://${CODING_GITHUB_TOKEN}@${REPO_URL#https://} /home/ubuntu/${FOLDER_NAME}; \
     else \
-        # Copy from submodule (local only) \
-        cp -r /ctx/${PROJECT_SUBMODULE}/. /home/ubuntu/${FOLDER_NAME}/ && \
-        rm -f /home/ubuntu/${FOLDER_NAME}/.git && \
-        cp -r /ctx/.git/modules/${PROJECT_SUBMODULE}/. /home/ubuntu/${FOLDER_NAME}/.git/ && \
-        cd /home/ubuntu/${FOLDER_NAME} && \
-        sed -i '/worktree = /d' .git/config; \
+        git clone ${REPO_URL} /home/ubuntu/${FOLDER_NAME}; \
     fi && \
     chown -R ubuntu:ubuntu /home/ubuntu/${FOLDER_NAME}
 

@@ -389,7 +389,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.0.0" },
-    { name = "hud-python", extras = ["agents"], specifier = ">=0.5.17" },
+    { name = "hud-python", extras = ["agents"], git = "https://github.com/hud-evals/hud-python.git?rev=hud-685" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.10.1" },
     { name = "numpy", specifier = ">=1.26.0" },
     { name = "packaging", specifier = ">=21.0" },
@@ -862,7 +862,7 @@ wheels = [
 [[package]]
 name = "hud-python"
 version = "0.5.18"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/hud-evals/hud-python.git?rev=hud-685#b2a64ea3b5949a42eb314c4dd6b5bea5a5b6ae37" }
 dependencies = [
     { name = "blessed" },
     { name = "fastmcp" },
@@ -879,10 +879,6 @@ dependencies = [
     { name = "toml" },
     { name = "typer" },
     { name = "watchfiles" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/b5/63/8d307efa6a1a2ead89e7b054a6f6abe278d81539998c4eb687bd2523c4f3/hud_python-0.5.18.tar.gz", hash = "sha256:583e499e67f04decdae6b85baf40f937267626cea7556493af25c1fb75d999ef", size = 522799, upload-time = "2026-02-03T17:16:01.227Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/a8/8b/9693533fefeb4453dd4b4bbac0a1799eb24ceadea6e85b75bca5d6af5c34/hud_python-0.5.18-py3-none-any.whl", hash = "sha256:d5583ae0d932daac355bb89dd4096af12dbdf737ef1c460653906ffc6b7cf174", size = 700264, upload-time = "2026-02-03T17:16:02.646Z" },
 ]
 
 [package.optional-dependencies]
