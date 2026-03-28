@@ -175,6 +175,7 @@ COPY ./env.py /mcp_server/env.py
 COPY ./tools /mcp_server/tools
 COPY ./grading /mcp_server/grading
 COPY ./tasks /mcp_server/tasks
+COPY ./tests /mcp_server/tests
 
 RUN chmod 777 /root
 

@@ -7,7 +7,7 @@ from env import env, setup_task, make_prompt
 from grading import AgentPatchGrader, Grade, ValidateMode
 
 
-@env.scenario("sample-json-bug")
+@env.scenario("sample-json-bug", exclude_tools=["hud_validate"])
 async def sample_json_bug(hints_enabled: bool = False, validate_mode: ValidateMode | None = None):
     """Fix the JSON serialization bug in server.py."""
     

@@ -10,6 +10,7 @@ Tools prefixed with _ are internal (hidden from agent, used by scenarios).
 import logging
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from hud import Environment
@@ -130,6 +131,26 @@ async def editor(
         return result.output or ""
     except ToolError as e:
         return f"Error: {e.message}"
+
+
+# ============================================================================
+# Validation
+# ============================================================================
+
+
+@env.tool()
+async def hud_validate() -> str:
+    """Run the test suite to validate the environment is working correctly."""
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/", "-v", "--tb=short"],
+        capture_output=True,
+        text=True,
+        cwd="/mcp_server",
+    )
+    output = result.stdout + result.stderr
+    if result.returncode != 0:
+        raise RuntimeError(output or f"pytest exited with code {result.returncode}")
+    return output
 
 
 # ============================================================================
