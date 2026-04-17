@@ -11,7 +11,6 @@ import logging
 import os
 import subprocess
 import sys
-from pathlib import Path
 
 from hud import Environment
 
@@ -225,8 +224,6 @@ def setup_task(task_id: str, base: str, test: str, golden: str, validate_mode: V
     os.chdir(project_dir)
 
 
-
-
 def make_prompt(description: str) -> str:
     """Generate a prompt from a task description.
     
@@ -247,7 +244,7 @@ Use the tools provided to complete the following task:
 
 
 # ============================================================================
-# Import and register all scenarios from tasks/
+# Import and register all scenarios from tasks.py
 # ============================================================================
 
 import tasks  # noqa: E402, F401 - registers scenarios

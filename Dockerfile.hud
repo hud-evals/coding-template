@@ -161,8 +161,8 @@ RUN pip install uv --break-system-packages
 
 # Copy the environment structure
 # env.py: tools + scenario registration
-# tasks/: scenario definitions
-# For dev iteration: hud dev -w tasks -w grading --port 8765
+# tasks.py: scenario definitions + task registry
+# For dev iteration: hud dev -w tasks.py -w grading --port 8765
 COPY ./pyproject.toml /mcp_server/pyproject.toml
 WORKDIR /mcp_server
 
@@ -174,7 +174,7 @@ ENV PATH=/mcp_server/.venv/bin:$PATH
 COPY ./env.py /mcp_server/env.py
 COPY ./tools /mcp_server/tools
 COPY ./grading /mcp_server/grading
-COPY ./tasks /mcp_server/tasks
+COPY ./tasks.py /mcp_server/tasks.py
 COPY ./tests /mcp_server/tests
 
 RUN chmod 777 /root

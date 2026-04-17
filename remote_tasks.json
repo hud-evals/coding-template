@@ -1,9 +1,0 @@
-[
-  {
-    "env": {
-      "name": "coding-template"
-    },
-    "scenario": "coding:sample-json-bug",
-    "args": {}
-  }
-]
