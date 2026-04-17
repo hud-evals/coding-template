@@ -4,7 +4,7 @@ Each task is created via scenario.task() and can be run locally or remotely:
 
     hud eval . --task-ids sample-json-bug
     hud eval . --all
-    hud sync tasks . farrel-coding-tasks
+    hud sync tasks . coding-tasks
 """
 
 from env import env, make_prompt, setup_task
