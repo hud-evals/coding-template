@@ -5,8 +5,8 @@ for the coding-template environment.
 
 Actions:
   -b/--build:     Build Docker image (docker build -t <image> -f Dockerfile.hud .)
-  -v/--validate:  Validate scenarios (baseline_fail + golden_pass, 0 agent steps)
-  -r/--run:       Run an agent against scenarios
+  -v/--validate:  Validate tasks (baseline_fail + golden_pass, 0 agent steps)
+  -r/--run:       Run an agent against tasks
   -p/--push:      Push Docker image to registry
   -j/--json:      Generate problem-metadata.json
 
@@ -21,8 +21,8 @@ to the active action:
 
 -p and -j can be combined with either side.
 
-Parallelism uses asyncio throughout. Validation and run tasks for
-different scenario IDs execute concurrently via asyncio.gather.
+Parallelism uses asyncio throughout. Validation and run for
+different tasks execute concurrently via asyncio.gather.
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ import sys
 import tomllib
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 import hud
 from hud import Environment
@@ -45,6 +46,8 @@ logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 PYPROJECT_PATH = Path("pyproject.toml")
+
+SCENARIO_NAME = "coding-bug"
 
 
 # ============================================================================
@@ -78,22 +81,24 @@ def _looks_like_registry_image(image: str) -> bool:
 
 
 # ============================================================================
-# Scenario discovery
+# Task discovery
 # ============================================================================
 
 
-def discover_scenario_ids() -> list[str]:
-    """Auto-discover all registered scenario IDs by importing env.py.
+def discover_tasks() -> dict[str, dict[str, Any]]:
+    """Auto-discover all registered tasks by importing tasks.py.
 
-    Importing ``env`` triggers ``import tasks`` at the bottom of env.py,
-    which runs the ``@env.scenario(...)`` decorators and populates
-    ``env._scenarios`` (a dict keyed by scenario name).
+    Returns a dict mapping task name to its bound scenario args.
+    Each task is a ``.task()`` call on the ``coding_bug`` scenario with
+    all content passed as parameters (task_id, description, branches, etc.).
     """
-    from env import env as _env  # noqa: WPS433 – intentional late import
+    from tasks import tasks as _tasks  # noqa: WPS433 – intentional late import
 
-    ids = list(_env._scenarios.keys())
-    logger.info(f"Auto-discovered {len(ids)} scenario(s): {ids}")
-    return ids
+    result = {}
+    for task_name, task_obj in _tasks.items():
+        result[task_name] = task_obj.args or {}
+    logger.info(f"Auto-discovered {len(result)} task(s): {list(result.keys())}")
+    return result
 
 
 # ============================================================================
@@ -157,50 +162,49 @@ async def push_image(image: str) -> bool:
 VALIDATE_MODES = ("baseline_fail", "golden_pass")
 
 
-async def validate_scenario(
+async def validate_task(
     image: str,
-    scenario_id: str,
+    task_name: str,
+    task_args: dict[str, Any],
     validate_mode: str,
     *,
-    hints_enabled: bool = False,
     docker_args: list[str] | None = None,
 ) -> tuple[str, str, float | None]:
-    """Validate a single scenario + mode by running an eval with 0 agent steps.
+    """Validate a single task + mode by running an eval with 0 agent steps.
 
     Validation runs the scenario's setup and grading without any agent actions.
     For ``baseline_fail`` the grader inverts the score (baseline should fail tests),
     so the expected reward is 1.0 in both modes.
 
     Returns:
-        (scenario_id, validate_mode, reward)  — reward is None on error.
+        (task_name, validate_mode, reward)  — reward is None on error.
     """
-    label = f"{scenario_id} ({validate_mode})"
+    label = f"{task_name} ({validate_mode})"
     logger.info(f"Validating: {label}")
 
     env = Environment("coding")
     env.connect_image(image, docker_args=docker_args)
 
     try:
-        task = env(scenario_id, validate_mode=validate_mode, hints_enabled=hints_enabled)
+        task = env(SCENARIO_NAME, validate_mode=validate_mode, **task_args)
         async with hud.eval(task, trace=True, quiet=True) as ctx:
             agent = ClaudeAgent.create(model="claude-sonnet-4-5")
             await agent.run(ctx, max_steps=0)
         reward = ctx.reward
     except Exception as exc:
         logger.error(f"Validation error for {label}: {exc}")
-        return (scenario_id, validate_mode, None)
+        return (task_name, validate_mode, None)
 
-    return (scenario_id, validate_mode, reward)
+    return (task_name, validate_mode, reward)
 
 
 async def validate_all(
     image: str,
-    scenario_ids: list[str],
+    task_registry: dict[str, dict[str, Any]],
     *,
-    hints_enabled: bool = False,
     docker_args: list[str] | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Validate all scenarios with both ``baseline_fail`` and ``golden_pass`` modes.
+    """Validate all tasks with both ``baseline_fail`` and ``golden_pass`` modes.
 
     Both modes are expected to yield ``reward == 1.0``.
 
@@ -208,8 +212,8 @@ async def validate_all(
         (passed_descriptions, failed_descriptions)
     """
     coros = [
-        validate_scenario(image, sid, mode, hints_enabled=hints_enabled, docker_args=docker_args)
-        for sid in scenario_ids
+        validate_task(image, name, args, mode, docker_args=docker_args)
+        for name, args in task_registry.items()
         for mode in VALIDATE_MODES
     ]
     results = await asyncio.gather(*coros, return_exceptions=True)
@@ -222,8 +226,8 @@ async def validate_all(
             failed.append(f"Exception: {result}")
             continue
 
-        sid, mode, reward = result
-        desc = f"{sid} ({mode})"
+        name, mode, reward = result
+        desc = f"{name} ({mode})"
         if reward == 1.0:
             logger.info(f"  PASS: {desc} -> reward={reward}")
             passed.append(desc)
@@ -239,51 +243,50 @@ async def validate_all(
 # ============================================================================
 
 
-async def run_scenario(
+async def run_task(
     image: str,
-    scenario_id: str,
+    task_name: str,
+    task_args: dict[str, Any],
     max_steps: int,
     *,
-    hints_enabled: bool = False,
     docker_args: list[str] | None = None,
 ) -> tuple[str, float | None]:
-    """Run an agent against a scenario.
+    """Run an agent against a task.
 
     Returns:
-        (scenario_id, reward)  — reward is None on error.
+        (task_name, reward)  — reward is None on error.
     """
-    logger.info(f"Running scenario: {scenario_id} (max_steps={max_steps}, hints={hints_enabled})")
+    logger.info(f"Running task: {task_name} (max_steps={max_steps})")
 
     env = Environment("coding")
     env.connect_image(image, docker_args=docker_args)
 
     try:
-        task = env(scenario_id, hints_enabled=hints_enabled)
+        task = env(SCENARIO_NAME, **task_args)
         async with hud.eval(task, trace=True) as ctx:
             agent = ClaudeAgent.create(model="claude-sonnet-4-5")
             await agent.run(ctx, max_steps=max_steps)
         reward = ctx.reward
     except Exception as exc:
-        logger.error(f"Run error for {scenario_id}: {exc}")
-        return (scenario_id, None)
+        logger.error(f"Run error for {task_name}: {exc}")
+        return (task_name, None)
 
-    return (scenario_id, reward)
+    return (task_name, reward)
 
 
 async def run_all(
     image: str,
-    scenario_ids: list[str],
+    task_registry: dict[str, dict[str, Any]],
     max_steps: int,
     *,
-    hints_enabled: bool = False,
     docker_args: list[str] | None = None,
 ) -> tuple[list[tuple[str, float]], list[tuple[str, float | None]]]:
-    """Run all scenarios concurrently with an agent.
+    """Run all tasks concurrently with an agent.
 
     Returns:
-        (succeeded, failed)  — each entry is (scenario_id, reward).
+        (succeeded, failed)  — each entry is (task_name, reward).
     """
-    coros = [run_scenario(image, sid, max_steps, hints_enabled=hints_enabled, docker_args=docker_args) for sid in scenario_ids]
+    coros = [run_task(image, name, args, max_steps, docker_args=docker_args) for name, args in task_registry.items()]
     results = await asyncio.gather(*coros, return_exceptions=True)
 
     succeeded: list[tuple[str, float]] = []
@@ -294,13 +297,13 @@ async def run_all(
             failed.append((f"Exception: {result}", None))
             continue
 
-        sid, reward = result
+        name, reward = result
         if reward is not None and reward > 0:
-            logger.info(f"  {sid} -> reward={reward}")
-            succeeded.append((sid, reward))
+            logger.info(f"  {name} -> reward={reward}")
+            succeeded.append((name, reward))
         else:
-            logger.error(f"  {sid} -> reward={reward}")
-            failed.append((sid, reward))
+            logger.error(f"  {name} -> reward={reward}")
+            failed.append((name, reward))
 
     return succeeded, failed
 
@@ -319,9 +322,8 @@ def _write_json(data: list[dict], path: str) -> None:
 
 def generate_json(
     image: str,
-    scenario_ids: list[str],
+    task_registry: dict[str, dict[str, Any]],
     *,
-    hints_enabled: bool = False,
     env_name: str = "coding-template",
 ) -> None:
     """Generate ``problem-metadata.json`` and ``remote_tasks.json``.
@@ -330,34 +332,30 @@ def generate_json(
     - ``remote_tasks.json`` uses the deployed environment name (no image field)
       and is consumed by ``hud eval remote_tasks.json``.
     """
-    scenario_args: dict = {}
-    if hints_enabled:
-        scenario_args["hints_enabled"] = True
-
     # -- problem-metadata.json (includes image) --
     problem_metadata = [
         {
             "env": {"name": env_name},
-            "scenario": f"coding:{sid}",
+            "scenario": f"coding:{SCENARIO_NAME}",
             "image": image,
-            "args": {**scenario_args},
+            "args": {**args},
         }
-        for sid in scenario_ids
+        for args in task_registry.values()
     ]
     _write_json(problem_metadata, "problem-metadata.json")
-    logger.info(f"Generated problem-metadata.json with {len(problem_metadata)} scenario(s)")
+    logger.info(f"Generated problem-metadata.json with {len(problem_metadata)} task(s)")
 
     # -- remote_tasks.json (no image, used by hud eval) --
     remote_tasks = [
         {
             "env": {"name": env_name},
-            "scenario": f"coding:{sid}",
-            "args": {**scenario_args},
+            "scenario": f"coding:{SCENARIO_NAME}",
+            "args": {**args},
         }
-        for sid in scenario_ids
+        for args in task_registry.values()
     ]
     _write_json(remote_tasks, "remote_tasks.json")
-    logger.info(f"Generated remote_tasks.json with {len(remote_tasks)} scenario(s)")
+    logger.info(f"Generated remote_tasks.json with {len(remote_tasks)} task(s)")
 
 
 # ============================================================================
@@ -383,24 +381,27 @@ async def async_main(args: argparse.Namespace) -> int:
             )
             return 1
 
-    hints_enabled: bool = args.hints
     extra_args: list[str] = args.docker_args or []
     has_failures = False
 
     if extra_args:
         logger.info(f"Extra args after '--': {extra_args}")
 
-    # Resolve scenario IDs: use --ids if given, otherwise auto-discover all.
-    scenario_ids: list[str] = args.ids or []
-    needs_scenarios = args.validate or args.run or args.json
-    if not scenario_ids and needs_scenarios:
-        scenario_ids = discover_scenario_ids()
-        if not scenario_ids:
-            logger.error("No scenarios found. Register scenarios via @env.scenario() in tasks/.")
+    # Resolve tasks: use --ids to filter, otherwise auto-discover all.
+    needs_tasks = args.validate or args.run or args.json
+    task_registry: dict[str, dict[str, Any]] = {}
+    if needs_tasks:
+        all_tasks = discover_tasks()
+        if args.ids:
+            task_registry = {k: v for k, v in all_tasks.items() if k in args.ids}
+            missing = set(args.ids) - set(task_registry.keys())
+            if missing:
+                logger.warning(f"Requested task IDs not found: {missing}")
+        else:
+            task_registry = all_tasks
+        if not task_registry:
+            logger.error("No tasks found. Define tasks via coding_bug.task() in tasks.py.")
             return 1
-
-    if hints_enabled:
-        logger.info("Hints ENABLED for this run")
 
     # --- Build ---
     if args.build:
@@ -410,12 +411,11 @@ async def async_main(args: argparse.Namespace) -> int:
 
     # --- Validate ---
     if args.validate:
-        logger.info(
-            f"Validating {len(scenario_ids)} scenario(s) "
-            f"× {len(VALIDATE_MODES)} modes ..."
-        )
+        logger.info(f"Validating {len(task_registry)} task(s) × {len(VALIDATE_MODES)} modes ...")
         passed, failed = await validate_all(
-            image, scenario_ids, hints_enabled=hints_enabled, docker_args=extra_args or None,
+            image,
+            task_registry,
+            docker_args=extra_args or None,
         )
 
         logger.info("")
@@ -428,24 +428,24 @@ async def async_main(args: argparse.Namespace) -> int:
 
     # --- Run ---
     if args.run:
-        logger.info(
-            f"Running {len(scenario_ids)} scenario(s) "
-            f"(max_steps={args.max_steps}) ..."
-        )
+        logger.info(f"Running {len(task_registry)} task(s) (max_steps={args.max_steps}) ...")
         succeeded, failed_runs = await run_all(
-            image, scenario_ids, args.max_steps, hints_enabled=hints_enabled, docker_args=extra_args or None,
+            image,
+            task_registry,
+            args.max_steps,
+            docker_args=extra_args or None,
         )
 
         logger.info("")
         logger.info("Run summary:")
         if succeeded:
             logger.info(f"  Succeeded ({len(succeeded)}):")
-            for sid, reward in succeeded:
-                logger.info(f"    {sid}: reward={reward}")
+            for name, reward in succeeded:
+                logger.info(f"    {name}: reward={reward}")
         if failed_runs:
             logger.error(f"  Failed ({len(failed_runs)}):")
-            for sid, reward in failed_runs:
-                logger.error(f"    {sid}: reward={reward}")
+            for name, reward in failed_runs:
+                logger.error(f"    {name}: reward={reward}")
             has_failures = True
 
     # --- Push ---
@@ -462,17 +462,14 @@ async def async_main(args: argparse.Namespace) -> int:
 
     # --- JSON ---
     if args.json:
-        generate_json(image, scenario_ids, hints_enabled=hints_enabled)
+        generate_json(image, task_registry)
 
     return 1 if has_failures else 0
 
 
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description=(
-            "Build, validate, run, push, and generate JSON "
-            "for coding-template Docker images."
-        ),
+        description=("Build, validate, run, push, and generate JSON for coding-template Docker images."),
     )
 
     parser.add_argument(
@@ -487,7 +484,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument(
         "--ids",
         nargs="+",
-        help="Scenario IDs to validate / run (default: all registered scenarios)",
+        help="Task IDs to validate / run (default: all tasks)",
     )
 
     # Action flags --------------------------------------------------------
@@ -507,13 +504,13 @@ def main(argv: Iterable[str] | None = None) -> int:
         "-v",
         "--validate",
         action="store_true",
-        help="Validate scenarios (baseline_fail + golden_pass, 0 agent steps)",
+        help="Validate tasks (baseline_fail + golden_pass, 0 agent steps)",
     )
     parser.add_argument(
         "-r",
         "--run",
         action="store_true",
-        help="Run agent against scenarios",
+        help="Run agent against tasks",
     )
     parser.add_argument(
         "-j",
@@ -523,12 +520,6 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
 
     # Options -------------------------------------------------------------
-    parser.add_argument(
-        "--hints",
-        action="store_true",
-        default=False,
-        help="Enable hints for scenarios (passed as hints_enabled to scenarios, included in JSON args)",
-    )
     parser.add_argument(
         "--max-steps",
         type=int,
@@ -540,7 +531,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     if "--" in raw_argv:
         split_idx = raw_argv.index("--")
         our_argv = raw_argv[:split_idx]
-        docker_args = raw_argv[split_idx + 1:]
+        docker_args = raw_argv[split_idx + 1 :]
     else:
         our_argv = raw_argv
         docker_args = []
@@ -549,9 +540,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     args.docker_args = docker_args
 
     if not any([args.build, args.push, args.validate, args.run, args.json]):
-        logger.warning(
-            "No action flags provided (-b, -p, -v, -r, -j). Nothing to do."
-        )
+        logger.warning("No action flags provided (-b, -p, -v, -r, -j). Nothing to do.")
         return 0
 
     if args.build and (args.validate or args.run):

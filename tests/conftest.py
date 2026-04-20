@@ -39,9 +39,7 @@ def image_name(request):
         if name:
             return name
 
-    raise ValueError(
-        "No target specified. Use --image <name-or-url> or set [tool.hud].image in pyproject.toml"
-    )
+    raise ValueError("No target specified. Use --image <name-or-url> or set [tool.hud].image in pyproject.toml")
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")

@@ -1,6 +1,6 @@
-"""Grading validation tests for all scenarios.
+"""Grading validation tests for all tasks.
 
-These tests run each scenario's grading pipeline inside the Docker container,
+These tests run each task's grading pipeline inside the Docker container,
 verifying that:
   - The baseline (buggy) code fails the tests  → score 0.0
   - The golden (fixed) code passes the tests   → score 1.0
@@ -8,24 +8,28 @@ verifying that:
 Usage:
     uv run pytest tests/test_grading.py -v
     uv run pytest tests/test_grading.py -v --image my-image:latest
-    uv run pytest tests/test_grading.py -v -k server_fix
+    uv run pytest tests/test_grading.py -v -k sample_json_bug
 """
 
 import json
 
 import pytest
 
+from tasks import tasks as ALL_TASKS
+
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
-# Each entry: (scenario_slug, problem_id)
-SCENARIOS = [
-    ("sample-json-bug", "sample_json_bug"),
-    ("sentry-fix", "sentry_fix"),
-    ("settings-bug", "settings_bug"),
-    ("notif-bug", "notif_bug"),
-    ("order-bug", "order_bug"),
-    ("settings-v2", "settings_v2"),
-    ("webhook-bug", "webhook_bug"),
+SCENARIO_SLUG = "coding-bug"
+
+# Non-hint tasks to validate (hints variants share the same branches/grading)
+TASK_IDS = [
+    "sample_json_bug",
+    "sentry_fix",
+    "settings_bug",
+    "notif_bug",
+    "order_bug",
+    "settings_v2",
+    "webhook_bug",
 ]
 
 
@@ -59,34 +63,36 @@ def _extract_score(resource_content) -> float:
         return float(text)
 
 
-@pytest.mark.parametrize("scenario_slug,problem_id", SCENARIOS, ids=[s[1] for s in SCENARIOS])
-async def test_baseline_fails(env, scenario_slug, problem_id):
+@pytest.mark.parametrize("task_id", TASK_IDS)
+async def test_baseline_fails(env, task_id):
     """Baseline (buggy) code should fail the test suite → grader returns 1.0 (inverted)."""
     name = _env_name(env)
-    prompt_name = f"{name}:{scenario_slug}"
+    prompt_name = f"{name}:{SCENARIO_SLUG}"
+    task_args = ALL_TASKS[task_id].args or {}
 
     # Setup phase: checkout baseline, generate patches
-    await env.get_prompt(prompt_name, {"validate_mode": "baseline_fail"})
+    await env.get_prompt(prompt_name, {"validate_mode": "baseline_fail", **task_args})
 
     # Evaluate phase: apply test.patch, run tests, grade
     result = await env.read_resource(prompt_name)
     score = _extract_score(result)
 
     # baseline_fail mode inverts the score: if tests fail (expected) → score 1.0
-    assert score == 1.0, f"{problem_id}: baseline should fail tests (inverted score should be 1.0, got {score})"
+    assert score == 1.0, f"{task_id}: baseline should fail tests (inverted score should be 1.0, got {score})"
 
 
-@pytest.mark.parametrize("scenario_slug,problem_id", SCENARIOS, ids=[s[1] for s in SCENARIOS])
-async def test_golden_passes(env, scenario_slug, problem_id):
+@pytest.mark.parametrize("task_id", TASK_IDS)
+async def test_golden_passes(env, task_id):
     """Golden (fixed) code should pass the test suite → grader returns 1.0."""
     name = _env_name(env)
-    prompt_name = f"{name}:{scenario_slug}"
+    prompt_name = f"{name}:{SCENARIO_SLUG}"
+    task_args = ALL_TASKS[task_id].args or {}
 
     # Setup phase: checkout golden branch, generate patches
-    await env.get_prompt(prompt_name, {"validate_mode": "golden_pass"})
+    await env.get_prompt(prompt_name, {"validate_mode": "golden_pass", **task_args})
 
     # Evaluate phase: apply test.patch, run tests, grade
     result = await env.read_resource(prompt_name)
     score = _extract_score(result)
 
-    assert score == 1.0, f"{problem_id}: golden branch should pass tests (score should be 1.0, got {score})"
+    assert score == 1.0, f"{task_id}: golden branch should pass tests (score should be 1.0, got {score})"
