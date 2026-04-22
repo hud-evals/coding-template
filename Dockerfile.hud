@@ -49,7 +49,6 @@ RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | b
 # 0) Set up your project repository
 #
 # Clones from REPO_URL at build time:
-#   uv run imagectl4.py my-image -b
 #   hud build . --build-arg REPO_URL=https://github.com/your-org/your-repo
 #   hud deploy . --build-arg REPO_URL=https://github.com/your-org/your-repo
 #

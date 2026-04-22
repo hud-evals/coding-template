@@ -17,6 +17,15 @@ hud sync tasks <taskset-name>           # push tasks to a taskset (fast, re-run 
 hud eval <taskset-name> --remote --full
 ```
 
+To use a customize the source repository:
+```bash
+hud deploy . --build-arg REPO_URL=https://github.com/your-org/your-repo
+
+# For private repos, add the secret:
+hud deploy . --build-arg REPO_URL=https://github.com/your-org/your-repo \
+             --secret id=CODING_GITHUB_TOKEN,env=CODING_GITHUB_TOKEN
+```
+
 **Iteration loop:** `hud deploy` is the slow step — run it once. After that, edit `tasks.py` and re-run `hud sync tasks` (takes seconds). Only redeploy when `env.py`, `Dockerfile.hud`, or system-level dependencies change.
 
 See [Deploy & Go Remote](https://docs.hud.ai/building/running-at-scale) for deploy flags, secrets, and auto-deploy options.
@@ -56,12 +65,8 @@ At runtime, `setup_task()` generates git patches (`baseline->test`, `baseline->g
 | `REPO_URL` | `https://github.com/hud-evals/coding-template-sample` | Repository to clone |
 | `FOLDER_NAME` | `project` | Destination folder in container |
 
-For private repos:
-```bash
-hud deploy . --build-arg REPO_URL=https://github.com/your-org/your-repo \
-             --secret id=CODING_GITHUB_TOKEN,env=CODING_GITHUB_TOKEN
-```
-
 ## Documentation
+
+To learn more about customizing this template, read the [Customization Guide](CUSTOMIZATION_GUIDE.md).
 
 To learn more about tasks, evaluations, and running at scale see the [full docs](https://docs.hud.ai).
