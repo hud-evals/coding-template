@@ -17,7 +17,7 @@ hud sync tasks <taskset-name>           # push tasks to a taskset (fast, re-run 
 hud eval <taskset-name> --remote --full
 ```
 
-To use a customize the source repository:
+To use your own source repository (where the code for your tasks are):
 ```bash
 hud deploy . --build-arg REPO_URL=https://github.com/your-org/your-repo
 
