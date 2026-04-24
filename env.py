@@ -10,7 +10,7 @@ Tools prefixed with _ are internal (hidden from agent, used by scenarios).
 import logging
 import os
 import subprocess
-from pathlib import Path
+import sys
 
 from hud import Environment
 
@@ -133,29 +133,54 @@ async def editor(
 
 
 # ============================================================================
+# Validation
+# ============================================================================
+
+
+@env.tool()
+async def hud_validate() -> str:
+    """Run the test suite to validate the environment is working correctly."""
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/", "-v", "--tb=short"],
+        capture_output=True,
+        text=True,
+        cwd="/mcp_server",
+    )
+    output = result.stdout + result.stderr
+    if result.returncode != 0:
+        raise RuntimeError(output or f"pytest exited with code {result.returncode}")
+    return output
+
+
+# ============================================================================
 # Scenario Helpers (called by @env.scenario functions in tasks/)
 # ============================================================================
 
 
-def setup_task(task_id: str, base: str, test: str, golden: str, validate_mode: ValidateMode | None = None) -> None:
+def setup_task(task_id: str, validate_mode: ValidateMode | None = None) -> None:
     """Set up environment for a task: checkout baseline, generate patches.
-    
+
+    Branch names are derived from *task_id* using the convention
+    ``{task_id}_baseline``, ``{task_id}_test``, ``{task_id}_golden``.
+
     Args:
-        task_id: Unique identifier for the task (used for patch directory)
-        base: Baseline branch name
-        test: Test branch name (contains hidden tests)
-        golden: Golden branch name (contains solution)
+        task_id: Unique identifier for the task (e.g. "sample_json_bug").
+        validate_mode: "baseline_fail" or "golden_pass" for validation.
     """
+    base = f"{task_id}_baseline"
+    test = f"{task_id}_test"
+    golden = f"{task_id}_golden"
+
     project_dir = _get_project_dir()
     patches_dir = os.environ.get("PATCHES_DIR", "/home/root/patches")
-    
+
     # Set PROBLEM_ID env var for grading runner
     os.environ["PROBLEM_ID"] = task_id
-    
+
     # Generate patches at runtime
     task_patches_dir = os.path.join(patches_dir, task_id)
     os.makedirs(task_patches_dir, exist_ok=True)
-    
+
     # Generate test.patch (base → test)
     logger.info("Generating test.patch: %s → %s", base, test)
     result = subprocess.run(
@@ -166,7 +191,7 @@ def setup_task(task_id: str, base: str, test: str, golden: str, validate_mode: V
     )
     with open(os.path.join(task_patches_dir, "test.patch"), "w") as f:
         f.write(result.stdout)
-    
+
     # Generate golden.patch (base → golden)
     logger.info("Generating golden.patch: %s → %s", base, golden)
     result = subprocess.run(
@@ -177,7 +202,7 @@ def setup_task(task_id: str, base: str, test: str, golden: str, validate_mode: V
     )
     with open(os.path.join(task_patches_dir, "golden.patch"), "w") as f:
         f.write(result.stdout)
-    
+
     # Checkout baseline branch
     if validate_mode == "golden_pass":
         logger.info("Checking out golden branch (validation): %s", golden)
@@ -200,22 +225,20 @@ def setup_task(task_id: str, base: str, test: str, golden: str, validate_mode: V
         subprocess.run(["chown", "-R", "ubuntu:ubuntu", project_dir], capture_output=True)
         # Keep .git protected
         subprocess.run(["chown", "-R", "root:root", os.path.join(project_dir, ".git")], capture_output=True)
-    
+
     os.chdir(project_dir)
-
-
 
 
 def make_prompt(description: str) -> str:
     """Generate a prompt from a task description.
-    
+
     Args:
         description: The task description
-        
+
     Returns:
         Formatted prompt string
     """
-    folder_name = os.environ.get('FOLDER_NAME', 'project')
+    folder_name = os.environ.get("FOLDER_NAME", "project")
     return f"""You will be working on a task for {folder_name}.
 The repository has already been cloned in /home/ubuntu/{folder_name}.
 
@@ -226,7 +249,7 @@ Use the tools provided to complete the following task:
 
 
 # ============================================================================
-# Import and register all scenarios from tasks/
+# Import and register all scenarios from tasks.py
 # ============================================================================
 
 import tasks  # noqa: E402, F401 - registers scenarios

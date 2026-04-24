@@ -2,112 +2,49 @@
 
 ## Creating New Tasks
 
-Tasks are defined in `tasks/*.py` using the `@env.scenario` decorator.
+This environment uses a single `coding-bug` scenario defined in `tasks.py`. Each task is a `.task()` call on that scenario, passing different parameters (task ID, description, test files). You don't need to define new scenarios — just add new `.task()` calls.
 
 ### 1. Set up branches in your target repo
 
-Each task needs 3 branches:
-- `baseline` - Starting state (bug present, no tests)
-- `test` - Adds test files that verify the fix
-- `golden` - Contains the correct solution
+Each task needs 3 branches following the naming convention `{task_id}_baseline`, `{task_id}_test`, `{task_id}_golden`:
 
-### 2. Define the scenario
+- `{task_id}_baseline` - Starting state (bug present, no tests)
+- `{task_id}_test` - Adds test files that verify the fix
+- `{task_id}_golden` - Contains the correct solution
+
+### 2. Add a task in `tasks.py`
+
+Add a new `.task()` call on the existing `coding_bug` scenario and register it in the `tasks` dict:
 
 ```python
-# tasks/basic.py
-from env import env, setup_task, make_prompt
-from grading import AgentPatchGrader, Grade, ValidateMode
+# In tasks.py
 
-@env.scenario("my-task")
-async def my_task(hints_enabled: bool = False, validate_mode: ValidateMode | None = None):
-    """Short description of the task."""
-    
-    # Set up git branches and patches
-    setup_task(
-        task_id="my_task",
-        base="my_task_baseline",
-        test="my_task_test",
-        golden="my_task_golden",
-        validate_mode=validate_mode,
-    )
-    
-    # Define the prompt shown to the agent
-    prompt = make_prompt("""Fix the bug in foo.py.
-    
-The function returns incorrect results when given negative numbers.
-""")
-    
-    # Yield prompt, wait for agent to finish
-    _ = yield prompt
-    
-    # Grade the solution
-    grade = Grade.from_subscores([
-        AgentPatchGrader.grade(
-            weight=1.0,
-            problem_id="my_task",
-            test_files=["test_foo.py"],
-            validate_mode=validate_mode,
-        )
-    ])
-    
-    yield grade.score
+_my_task = coding_bug.task(
+    task_id="my_task",
+    description=(
+        "Fix the bug in foo.py.\n\n"
+        "The function returns incorrect results when given negative numbers."
+    ),
+    test_files=["test_foo.py"],
+)
+_my_task.slug = "my-task"
+
+# Add to the tasks registry
+tasks = {
+    ...
+    "my_task": _my_task,
+}
 ```
 
-### 3. Build the Docker image
-
-Build the image before validating or running:
+### 3. Deploy, sync, and run
 
 ```bash
-uv run imagectl4.py my-image -b
+hud deploy .                            # deploy the environment (once)
+hud sync tasks <taskset-name>           # push tasks to a taskset (re-run on every task change)
+hud eval <taskset-name> --remote --full # run evaluation
 ```
 
-### 4. Validate your task
-
-Before testing with an agent, validate that your branches and grading are set up correctly:
-
-```bash
-# Validate all registered scenarios
-uv run imagectl4.py my-image -v
-
-# Validate specific scenarios only
-uv run imagectl4.py my-image -v --ids my-task
-```
-
-If `--ids` is omitted, `imagectl4.py` auto-discovers every scenario registered via `@env.scenario()` in `tasks/`.
-
-**How validation works:** Validation runs each scenario with zero agent steps (the agent does nothing) and then evaluates the grader. Each scenario is tested in two modes:
-
-- **`baseline_fail`** — The environment starts on the baseline branch (the buggy code). Since the agent takes no steps, the tests should *fail*. The grader detects this failure and inverts the score, so a correctly-configured task reports `reward = 1.0`.
-- **`golden_pass`** — The environment starts on the golden branch (the correct solution). Since the solution is already in place, the tests should *pass*, and the grader reports `reward = 1.0` directly.
-
-Both modes must return `reward = 1.0` for validation to pass. If either mode fails, it means your branches, patches, or grading logic are misconfigured. Common issues:
-
-- `baseline_fail` returns 0 — The baseline branch already passes the tests (the bug isn't actually present, or test branch is wrong).
-- `golden_pass` returns 0 — The golden branch doesn't pass the tests (the solution is incomplete, or the test files don't match).
-
-### 5. Test with an agent
-
-Once validation passes, run an agent against your scenarios:
-
-```bash
-# Run all scenarios
-uv run imagectl4.py my-image -r
-
-# Run specific scenarios with custom step limit
-uv run imagectl4.py my-image -r --ids my-task --max-steps 30
-```
-
-### 6. Build, validate, and run in one command
-
-Flags can be combined. Actions always execute in order: build, validate, run, push, json.
-
-```bash
-# Build + validate + run
-uv run imagectl4.py my-image -bvr
-
-# Full pipeline: build, validate, run, push, and generate metadata
-uv run imagectl4.py my-image -bvrpj --ids my-task
-```
+Only redeploy when `env.py`, `Dockerfile.hud`, or system-level dependencies change. After that, edit `tasks.py` and re-run `hud sync tasks` (fast).
 
 ---
 
@@ -186,7 +123,7 @@ Installs the evaluation environment and tools:
 ```dockerfile
 COPY ./env.py /mcp_server/env.py
 COPY ./grading /mcp_server/grading
-COPY ./tasks /mcp_server/tasks
+COPY ./tasks.py /mcp_server/tasks.py
 ```
 
 ---
@@ -308,9 +245,8 @@ subprocess.run(["sudo", "-u", "youruser", "bash", "-lc", command], ...)
 
 | File | Purpose |
 |------|---------|
-| `tasks/*.py` | Task definitions |
+| `tasks.py` | Task definitions (`.task()` calls on the `coding-bug` scenario) |
 | `grading/graders.py` | Grading logic |
 | `grading/runner.py` | Test execution |
 | `Dockerfile.hud` | Build configuration |
 | `env.py` | MCP server and tools |
-| `imagectl4.py` | Build, validate, run, push, and JSON generation |
