@@ -44,5 +44,6 @@ coverage/
 # HUD
 hud.lock.yaml
 .hud
+.hud_local/
 .hud_eval.toml
 problem-metadata.json
