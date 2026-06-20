@@ -3,7 +3,7 @@ name = "coding-env"
 version = "0.1.0"
 description = "Coding environment (HUD v6) for solving programming tasks via a sandboxed ssh workspace"
 requires-python = ">=3.11,<3.13"
-dependencies = [ "hud-python[agents]>=0.6.0", "pytest>=8.0.0", "pytest-asyncio>=0.23.0",]
+dependencies = [ "hud-python[agents]>=0.6.5", "pytest>=8.0.0", "pytest-asyncio>=0.23.0",]
 
 [build-system]
 requires = [ "hatchling",]

@@ -25,6 +25,7 @@ node_modules/
 *~
 .DS_Store
 .opencode/
+.claude/
 
 # Logs
 *.log
