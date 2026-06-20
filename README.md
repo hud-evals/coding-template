@@ -32,7 +32,7 @@ hud set HUD_API_KEY=your-key-here   # CLI auth, get one at hud.ai/project/api-ke
 
 ```bash
 # local — clones the target repo into a per-process temp dir (macOS + Linux)
-hud eval tasks.py claude --task-ids sample-json-bug -y --runtime local
+hud eval tasks.py claude --task-ids sentry-fix -y --runtime local
 
 # deploy once, then run hosted
 hud deploy .
