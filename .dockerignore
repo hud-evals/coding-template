@@ -3,6 +3,9 @@
 !.git/modules/
 .gitignore
 
+# Local runtime substrate (clones for `--runtime local`), never ship to the image
+.hud_local/
+
 # Python
 __pycache__/
 *.py[cod]
