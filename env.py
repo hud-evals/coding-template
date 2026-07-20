@@ -32,7 +32,6 @@ import asyncio
 import logging
 import os
 import shutil
-import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -83,29 +82,16 @@ AGENT_HOME = Path("/tmp/agent-home")  # noqa: S108 - container-local, created at
 
 env = Environment(name="coding")
 
-
-class UidWallWorkspace(Workspace):
-    """Drop agent shells to a non-root uid.
-
-    The env process (root, in images) keeps the vault and instance assets
-    under ``/hud`` at mode 700; the uid-dropped agent can edit the repo but
-    never read the answer key. No-op when the env itself is not root (local).
-    """
-
-    def shell_argv(self, command=None, *, cwd=None, env=None):
-        argv = super().shell_argv(command, cwd=cwd, env=env)
-        if sys.platform != "win32" and hasattr(os, "geteuid") and os.geteuid() == 0:
-            uid = str(AGENT_UID)
-            argv = ["setpriv", "--reuid", uid, "--regid", uid, "--clear-groups", "--", *argv]
-        return argv
-
-
-_ws = UidWallWorkspace(
+# shell_uid is the privilege wall: the env process (root, in images) keeps the
+# vault and instance assets under /hud at mode 700; the uid-dropped agent can
+# edit the repo but never read the answer key. No-op off root (local).
+_ws = Workspace(
     REPO_DIR,
     guest_path=str(REPO_DIR),
     network=True,
     env={"HOME": str(AGENT_HOME)},
     track_files=settings.file_tracking_enabled,
+    shell_uid=AGENT_UID,
 )
 
 _github = MockGitHub()

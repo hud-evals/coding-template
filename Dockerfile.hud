@@ -59,7 +59,7 @@ command -v uv >/dev/null 2>&1 || {
 }
 uv python install 3.12
 uv venv /hud/venv --python 3.12
-uv pip install --python /hud/venv/bin/python 'hud>=0.6.10'
+uv pip install --python /hud/venv/bin/python 'hud>=0.6.11'
 chmod -R go-rwx /hud
 INSTALL
 ENV REPO_DIR=/app PYTHONPATH=/hud
