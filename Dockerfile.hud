@@ -1,78 +1,68 @@
 # syntax=docker/dockerfile:1
-FROM ubuntu:24.04 AS setup
+# One image definition for both flavors.
+#
+# Generic (default) — the repo-clone stage bakes your target repo into /app:
+#   docker build -f Dockerfile.hud --build-arg REPO_URL=https://github.com/you/repo .
+#   (private repos: --secret id=CODING_GITHUB_TOKEN,env=CODING_GITHUB_TOKEN)
+#
+# SWE-bench Pro (driven by swe_tasks.py) — BASE selects the instance's
+# prebuilt image (repo already at /app) and INSTANCE_ID bakes its assets:
+#   docker build -f Dockerfile.hud --build-arg BASE=jefzda/sweap-images:<tag> \
+#     --build-arg INSTANCE_ID=<id> .
+ARG BASE=repo-clone
+
+# ─── generic head: toolchain + target repo at /app ───
+FROM ubuntu:24.04 AS repo-clone
 
 RUN apt-get update -y \
   && apt-get install -y --no-install-recommends \
-  bash \
-  build-essential \
-  ca-certificates \
-  curl \
-  git \
-  gnupg \
-  libpq5 \
-  openssl \
-  python-is-python3 \
-  python3 \
-  python3-dev \
-  python3-pip \
-  python3-venv \
-  python3-wheel \
-  sqlite3 \
-  vim \
-  wget \
+  bash build-essential ca-certificates curl git openssl \
+  python-is-python3 python3 python3-dev python3-pip python3-venv util-linux \
   && rm -rf /var/lib/apt/lists/* \
   && update-ca-certificates
 
-# Target repo — override at build with --build-arg REPO_URL=https://github.com/you/repo
-# (private: --secret id=CODING_GITHUB_TOKEN,env=CODING_GITHUB_TOKEN).
+# The sample tasks' test command uses the image's python; adjust per repo.
+RUN pip3 install --break-system-packages pytest
+
 ARG REPO_URL="https://github.com/hud-evals/coding-template-sample"
-ARG FOLDER_NAME="project"
-ENV FOLDER_NAME=${FOLDER_NAME} \
-    REPO_URL=${REPO_URL} \
-    HOME=/home/ubuntu \
-    PROJECT_DIR=/home/ubuntu/${FOLDER_NAME} \
-    PATCHES_DIR=/home/root/patches
-
-USER ubuntu
-RUN --mount=type=secret,id=CODING_GITHUB_TOKEN,uid=1000 \
+RUN --mount=type=secret,id=CODING_GITHUB_TOKEN \
     if [ -f /run/secrets/CODING_GITHUB_TOKEN ]; then \
-        CODING_GITHUB_TOKEN=$(cat /run/secrets/CODING_GITHUB_TOKEN) && \
-        git clone https://${CODING_GITHUB_TOKEN}@${REPO_URL#https://} /home/ubuntu/${FOLDER_NAME}; \
+        git clone "https://$(cat /run/secrets/CODING_GITHUB_TOKEN)@${REPO_URL#https://}" /app; \
     else \
-        git clone ${REPO_URL} /home/ubuntu/${FOLDER_NAME}; \
+        git clone ${REPO_URL} /app; \
     fi
-
-# uid wall: the repo is owned by the agent (uid 1000); the answer key (.git
-# branches) and generated patches stay root:700 so only the env/grader (root)
-# can read them — the dropped agent shell can't.
-USER root
-RUN chown -R ubuntu:ubuntu /home/ubuntu/${FOLDER_NAME} \
-    && mkdir -p /home/root/patches \
-    && chmod 700 /home/root \
-    && chown -R root:root /home/ubuntu/${FOLDER_NAME}/.git \
-    && chmod -R 700 /home/ubuntu/${FOLDER_NAME}/.git \
-    && git config --global --add safe.directory /home/ubuntu/${FOLDER_NAME}
-
 # Add a build step for the target repo here if it needs one (deps, compile).
 
+# ─── the served image: BASE + hud serving layer (+ instance assets) ───
+FROM ${BASE}
 
-FROM setup AS runtime
+# ".none" is a committed empty dir, so generic builds bake no instance and
+# env.py serves only the generic coding-task template.
+ARG INSTANCE_ID=".none"
+COPY env.py /hud/env.py
+COPY coding /hud/coding
+COPY instances/${INSTANCE_ID}/ /hud/instance/
 
-RUN pip install uv --break-system-packages
-
-COPY ./pyproject.toml /mcp_server/pyproject.toml
-WORKDIR /mcp_server
-ENV RUST_LOG=warn \
-    PYTHONPATH=/mcp_server/.venv/lib/python3.12/site-packages:/mcp_server \
-    PATH=/mcp_server/.venv/bin:$PATH
-RUN uv venv && . .venv/bin/activate && uv sync --no-install-project --extra dev && uv pip install -e .
-
-COPY ./env.py /mcp_server/env.py
-COPY ./grading /mcp_server/grading
-COPY ./tasks.py /mcp_server/tasks.py
-COPY ./tests /mcp_server/tests
-RUN chmod 777 /root
-
-ENV PROBLEM_ID=""
+# Self-contained hud venv under /hud: bootstrap uv (with its own managed
+# Python), never touching the base image's Python or site-packages. chmod 700
+# keeps the vault and instance assets out of the uid-dropped agent's reach.
+RUN <<'INSTALL'
+set -eu
+export PATH="$HOME/.local/bin:$PATH" UV_INSTALL_DIR="$HOME/.local/bin"
+command -v uv >/dev/null 2>&1 || {
+  { command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; } \
+    || { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } \
+    || apk add --no-cache curl ca-certificates
+  { command -v curl >/dev/null 2>&1 && curl -LsSf https://astral.sh/uv/install.sh | sh; } \
+    || { command -v wget >/dev/null 2>&1 && wget -qO- https://astral.sh/uv/install.sh | sh; } \
+    || pip install -q -U uv
+}
+uv python install 3.12
+uv venv /hud/venv --python 3.12
+uv pip install --python /hud/venv/bin/python 'hud>=0.6.10'
+chmod -R go-rwx /hud
+INSTALL
+ENV REPO_DIR=/app PYTHONPATH=/hud
 EXPOSE 8765
-CMD ["hud", "serve", "env:env", "--host", "0.0.0.0", "--port", "8765"]
+ENTRYPOINT []
+CMD ["/hud/venv/bin/hud", "serve", "/hud/env.py", "--host", "0.0.0.0", "--port", "8765"]

@@ -1,35 +1,24 @@
-"""In-process wiring smoke tests for the v6 environment (no Docker required).
+"""In-process wiring smoke tests (no Docker): the served surface is well-formed."""
 
-These don't serve the env or touch the target repo — they just confirm the
-template is registered and the task rows are well-formed, so authoring mistakes
-surface fast without a build.
-"""
+import json
+from pathlib import Path
 
 from env import env
-from tasks import tasks
 
-
-def test_template_registered():
-    """The generic bug-fix template is registered under its public id."""
-    assert "coding-bug" in env.tasks
-    entry = env.tasks["coding-bug"].manifest_entry()
-    assert entry["id"] == "coding-bug"
+FIXTURE_INSTANCE = json.loads((Path(__file__).parent / "fixtures" / "instance" / "instance.json").read_text("utf-8"))
 
 
 def test_env_identity():
     assert env.name == "coding"
 
 
-def test_tasks_collected():
-    """`hud eval` / `hud sync` collect the public ``tasks`` list."""
-    assert len(tasks) == 4
+def test_generic_template_registered():
+    assert "coding-task" in env.tasks
+    assert env.tasks["coding-task"].manifest_entry()["id"] == "coding-task"
 
-    slugs = {t.slug for t in tasks}
-    assert slugs == {"sentry-fix", "notif-bug", "settings-v2", "webhook-bug"}
-    assert len(slugs) == len(tasks), "task slugs must be unique"
 
-    for task in tasks:
-        assert task.env == "coding"
-        assert task.id == "coding-bug"
-        assert "task_id" in task.args
-        assert "test_files" in task.args
+def test_swe_bench_template_registered_when_instance_baked():
+    """conftest points INSTANCE_DIR at the fixture instance, as an instance image would."""
+    instance_id = FIXTURE_INSTANCE["instance_id"]
+    assert instance_id in env.tasks
+    assert env.tasks[instance_id].manifest_entry()["id"] == instance_id

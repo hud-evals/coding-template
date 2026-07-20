@@ -1,49 +1,32 @@
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
+.pytest_cache/
+.ruff_cache/
+.coverage
+.venv
+.env
 build/
 dist/
 *.egg-info/
-*.egg
-.pytest_cache/
-.coverage
-.env
-.venv
-venv/
 
-# Node
-node_modules/
-
-# IDE
+# OS / IDE
+.DS_Store
 .vscode/
 .idea/
 *.swp
-*.swo
-*~
-.DS_Store
-.opencode/
-
-# Logs
-*.log
-logs/
-tmp/
-
-# references
-reference/
-
-# Docker
-docker_build.log
-
-# Test outputs
-test_results/
-coverage/
 
 # HUD
 hud.lock.yaml
 .hud
 .hud_local/
 .hud_eval.toml
-problem-metadata.json
+.hud-images.json
+
+# SWE-bench Pro instance assets are fetched per-user (swe_tasks.py) and carry
+# the golden patches; only the empty .none dir (generic image builds) ships.
+instances/*
+!instances/.none/
+
+# Logs
+*.log
