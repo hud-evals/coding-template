@@ -25,12 +25,16 @@ RUN apt-get update -y \
 RUN pip3 install --break-system-packages pytest
 
 ARG REPO_URL="https://github.com/hud-evals/coding-template-sample"
+# chown in the same RUN as the clone (a separate layer would duplicate /app):
+# env.py serves agent shells as uid 1000, so the baked tree must be theirs.
+# Doing it at build makes it free at runtime, whatever the repo's size.
 RUN --mount=type=secret,id=CODING_GITHUB_TOKEN \
     if [ -f /run/secrets/CODING_GITHUB_TOKEN ]; then \
         git clone "https://$(cat /run/secrets/CODING_GITHUB_TOKEN)@${REPO_URL#https://}" /app; \
     else \
         git clone ${REPO_URL} /app; \
-    fi
+    fi \
+    && chown -R 1000:1000 /app
 # Add a build step for the target repo here if it needs one (deps, compile).
 
 # ─── the served image: BASE + hud serving layer (+ instance assets) ───

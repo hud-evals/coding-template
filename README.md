@@ -84,6 +84,10 @@ integration suite is the same check for built SWE-bench Pro instances.
   network egress at the runtime layer if that matters for your run.
 - The uid wall needs `setpriv` (util-linux) in the image; the repo path comes from `REPO_DIR`
   (`/app` in instance images).
+- The agent runs as uid 1000, so the baked repo must belong to it. The workspace only chowns
+  its own directory at start (O(1), keeps boot fast); the tree is owned where it's staged —
+  the generic build chowns `/app` in the clone step, and task setup re-chowns after root
+  mutates the worktree (checkout, vaulting).
 
 ## Documentation
 
