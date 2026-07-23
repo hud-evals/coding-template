@@ -1,2 +1,34 @@
-Removed to not contain the real solution — this folder serves as a structural example only.
-In a real task, this file holds the reference solution as a git diff (see gold.diff usage in tasks.py).
+# REDACTED IN THIS EXAMPLE — the real reference solution is not included so
+# this task can't be copied. This file explains what belongs here.
+#
+# THIS FILE IS MANDATORY. A task without a gold diff cannot be accepted:
+# it is the only proof that the task is solvable and that the graders
+# reward a correct solution. Your submission must include it (as a private
+# gist/diff — never agent-accessible).
+#
+# WHAT THIS FILE IS
+# The gold (reference) solution as a single `git diff` against the pinned
+# base commit (the BASE_SHA in Dockerfile.hud). It is the answer key:
+# everything a mergeable solution would change — source fix, new tests,
+# and the repo's release bookkeeping (e.g. changeset / version bump).
+#
+# Produce it from your solved working tree:
+#     git diff <BASE_SHA> > task/gold.diff
+#
+# HOW IT IS USED
+# 1. It is baked into the image under /hud (root-only, mode 700) — the
+#    agent can never read it.
+# 2. Golden validation: running the task with validate_mode="golden"
+#    applies THIS diff instead of the agent's work and runs all graders.
+#    It must score ~1.0 — that proves your graders are fair (no false
+#    negatives on a correct solution). Run it once after every grader
+#    change:
+#        hud task grade <task-slug> --args '{"validate_mode": "golden"}'
+# 3. Reviewers can inspect it (trace viewer Source tab) to check your
+#    merge bar without cloning anything.
+#
+# REQUIREMENTS
+# - applies cleanly to the base commit (`git apply --check task/gold.diff`)
+# - passes every deterministic grader, including test_quality's
+#   anti-vacuity check (your new tests must FAIL on the unfixed code)
+# - satisfies the conventions gate (lint, typecheck, release bookkeeping)
