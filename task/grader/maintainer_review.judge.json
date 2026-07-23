@@ -1,0 +1,9 @@
+{
+  "question": "Review this diff against the effect-dynamodb repository's contribution standards.",
+  "criteria": [
+    "The diff stays on-ticket: refactoring that supports the fix (extracting helpers, restructuring the touched code paths) is fine, but there are no UNRELATED drive-by edits — no changes to files or behaviors the ticket doesn't touch, no opportunistic cleanup elsewhere in the codebase",
+    "The change follows the codebase's existing idioms (Effect combinators, tagged error types, naming, biome style)",
+    "The change introduces no new public API surface and keeps existing public shapes intact",
+    "The submission includes the release bookkeeping this repo requires for a user-facing change (a changeset entry and/or consistent version bump)"
+  ]
+}

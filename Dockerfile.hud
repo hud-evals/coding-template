@@ -1,72 +1,91 @@
-# syntax=docker/dockerfile:1
-# One image definition for both flavors.
+# fix_aggregate_listing on the coding-template (rubric flavor).
 #
-# Generic (default) — the repo-clone stage bakes your target repo into /app:
-#   docker build -f Dockerfile.hud --build-arg REPO_URL=https://github.com/you/repo .
-#   (private repos: --secret id=CODING_GITHUB_TOKEN,env=CODING_GITHUB_TOKEN)
-#
-# SWE-bench Pro (driven by swe_tasks.py) — BASE selects the instance's
-# prebuilt image (repo already at /app) and INSTANCE_ID bakes its assets:
-#   docker build -f Dockerfile.hud --build-arg BASE=jefzda/sweap-images:<tag> \
-#     --build-arg INSTANCE_ID=<id> .
-ARG BASE=repo-clone
+# Substrate: effect-dynamodb at the pinned base SHA (history vaulted at task
+# setup by coding/repo.py), Node 24 + pnpm 10, DynamoDB Local sidecar, hud
+# serve. Everything answer-key-shaped lives under /hud (root, mode 700):
+# the vault, the hidden rubric grader, and gold.diff. Agent shells drop to
+# uid 1000 (setpriv), so /hud is unreadable from the agent side.
 
-# ─── generic head: toolchain + target repo at /app ───
-FROM ubuntu:24.04 AS repo-clone
+FROM node:24-bookworm
 
-RUN apt-get update -y \
-  && apt-get install -y --no-install-recommends \
-  bash build-essential ca-certificates curl git openssl \
-  python-is-python3 python3 python3-dev python3-pip python3-venv util-linux \
-  && rm -rf /var/lib/apt/lists/* \
-  && update-ca-certificates
+ARG REPO_URL=https://github.com/jmenga/effect-dynamodb
+ARG BASE_SHA=ccc3ced19424414f0ca0fc6632e5526889ce7d6a
 
-# The sample tasks' test command uses the image's python; adjust per repo.
-RUN pip3 install --break-system-packages pytest
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git curl ca-certificates \
+        default-jre-headless \
+        util-linux \
+        python3 python3-venv \
+    && rm -rf /var/lib/apt/lists/*
 
-ARG REPO_URL="https://github.com/hud-evals/coding-template-sample"
-# chown in the same RUN as the clone (a separate layer would duplicate /app):
-# env.py serves agent shells as uid 1000, so the baked tree must be theirs.
-# Doing it at build makes it free at runtime, whatever the repo's size.
-RUN --mount=type=secret,id=CODING_GITHUB_TOKEN \
-    if [ -f /run/secrets/CODING_GITHUB_TOKEN ]; then \
-        git clone "https://$(cat /run/secrets/CODING_GITHUB_TOKEN)@${REPO_URL#https://}" /app; \
-    else \
-        git clone ${REPO_URL} /app; \
-    fi \
-    && chown -R 1000:1000 /app
-# Add a build step for the target repo here if it needs one (deps, compile).
+RUN npm install -g pnpm@10
 
-# ─── the served image: BASE + hud serving layer (+ instance assets) ───
-FROM ${BASE}
+# DynamoDB Local (started by env.py's initialize hook)
+RUN mkdir -p /opt/dynamodb-local \
+    && curl -fsSL https://s3.us-west-2.amazonaws.com/dynamodb-local/dynamodb_local_latest.tar.gz \
+       | tar -xz -C /opt/dynamodb-local
 
-# ".none" is a committed empty dir, so generic builds bake no instance and
-# env.py serves only the generic coding-task template.
-ARG INSTANCE_ID=".none"
-COPY env.py /hud/env.py
-COPY coding /hud/coding
-COPY instances/${INSTANCE_ID}/ /hud/instance/
+RUN python3 -m venv /opt/hudvenv \
+    && /opt/hudvenv/bin/pip install --no-cache-dir "hud==0.6.12.dev0"
+ENV PATH="/opt/hudvenv/bin:${PATH}"
 
-# Self-contained hud venv under /hud: bootstrap uv (with its own managed
-# Python), never touching the base image's Python or site-packages. chmod 700
-# keeps the vault and instance assets out of the uid-dropped agent's reach.
-RUN <<'INSTALL'
-set -eu
-export PATH="$HOME/.local/bin:$PATH" UV_INSTALL_DIR="$HOME/.local/bin"
-command -v uv >/dev/null 2>&1 || {
-  { command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; } \
-    || { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } \
-    || apk add --no-cache curl ca-certificates
-  { command -v curl >/dev/null 2>&1 && curl -LsSf https://astral.sh/uv/install.sh | sh; } \
-    || { command -v wget >/dev/null 2>&1 && wget -qO- https://astral.sh/uv/install.sh | sh; } \
-    || pip install -q -U uv
-}
-uv python install 3.12
-uv venv /hud/venv --python 3.12
-uv pip install --python /hud/venv/bin/python 'hud>=0.6.11'
-chmod -R go-rwx /hud
-INSTALL
-ENV REPO_DIR=/app PYTHONPATH=/hud
-EXPOSE 8765
-ENTRYPOINT []
-CMD ["/hud/venv/bin/hud", "serve", "/hud/env.py", "--host", "0.0.0.0", "--port", "8765"]
+# Substrate repo at the pinned base commit. History is truncated here and
+# additionally vaulted at task setup (coding/repo.py), so the agent gets a
+# fresh single-commit repo with working git and no refs to mine.
+RUN mkdir -p /workspace \
+    && git init -q /workspace/repo \
+    && cd /workspace/repo \
+    && git remote add origin ${REPO_URL} \
+    && git fetch --depth 1 origin ${BASE_SHA} \
+    && git checkout -q FETCH_HEAD \
+    && git checkout -q -b main \
+    && git config --system user.email "dev@localhost" \
+    && git config --system user.name "dev" \
+    # the repo gets chowned to the agent uid below; root (build steps and the
+    # grading process) must still be allowed to run git in it
+    && git config --system --add safe.directory /workspace/repo
+
+# chown in the same RUN as the install ("chown what you stage" — the SDK's
+# shell_uid no longer recurses at boot, so baked trees must be agent-owned
+# at build time; task setup's chown -R then only touches per-task mutations).
+RUN cd /workspace/repo \
+    && pnpm install --frozen-lockfile \
+    && pnpm --filter @effect-dynamodb/schema build \
+    && pnpm --filter effect-dynamodb build \
+    && pnpm --filter @effect-dynamodb/geo build \
+    && chown -R 1000:1000 /workspace/repo
+
+# ── /hud: everything the agent must never read (mode 700, root) ──────────
+# hidden rubric grader + pristine copies + grader-owned runner tree + gold
+COPY task/grader/ /hud/grader/
+COPY task/gold.diff /hud/gold.diff
+RUN mkdir -p /hud/grader/pristine /hud/vault /hud/logs \
+    && cp -r /workspace/repo/packages/effect-dynamodb/src /hud/grader/pristine/src \
+    && cp -r /workspace/repo/packages/effect-dynamodb/test /hud/grader/pristine/test \
+    && cp /workspace/repo/packages/effect-dynamodb/vitest.config.ts \
+          /workspace/repo/packages/effect-dynamodb/vitest.connected.ts \
+          /hud/grader/pristine/ \
+    && git -C /workspace/repo rev-parse HEAD > /hud/grader/base_sha \
+    && cp -a /workspace/repo /hud/grader/runner \
+    && rm -rf /hud/grader/runner/.git /hud/grader/runner/.hud \
+    # cp -a preserved the agent uid from the chowned repo; the runner is
+    # grader-owned and must be root's
+    && chown -R root:root /hud \
+    && chmod -R 700 /hud
+
+# Template runtime layout
+ENV REPO_DIR=/workspace/repo \
+    VAULT_DIR=/hud/vault \
+    GRADING_LOGS_DIR=/hud/logs \
+    GOLD_DIFF=/hud/gold.diff \
+    GRADER_DIR=/hud/grader
+
+WORKDIR /app
+COPY coding/ /app/coding/
+COPY env.py tasks.py /app/
+COPY task/prompt.md /app/task/prompt.md
+RUN chmod 600 /app/tasks.py
+
+# Serve tasks.py: it imports the template's Environment (env.py) untouched and
+# registers the rubric-task flavor + this task on top of it.
+CMD ["hud", "serve", "tasks.py", "--host", "0.0.0.0"]

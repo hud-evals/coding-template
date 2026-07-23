@@ -1,110 +1,236 @@
-"""Sample tasks: four bugs in the sample repo, plus one SDLC variant.
+"""fix_aggregate_listing (Justin Menga) on the coding-template.
 
-Each row parameterizes a template from ``env.py`` with the 3-branch
-convention — ``{task}_baseline`` (starting state), ``{task}_test`` (hidden
-tests), ``{task}_golden`` (reference fix) — as refs in the repo the env
-serves (``REPO_URL``, default
-https://github.com/hud-evals/coding-template-sample)::
+Reads like a scoreboard:
 
-    hud eval tasks.py claude --task-ids sentry-fix -y --runtime local
-    hud eval tasks.py claude --full
+- GRADERS is the single list of ALL criteria: (name, weight, blocker, kind,
+  timeout). "bash" entries map to a function in task/grader/run_grading.sh
+  (and the hidden test it runs); the "judge" entry is the LLM diff review
+  whose criteria live in task/grader/judge.json. The subscore you see in
+  the trace viewer is the name you grep for in the grader.
+- The task template runs them sequentially over the coding-template's
+  hermetic repo lifecycle (vault -> capture diff -> reset -> re-apply).
 
-SWE-bench Pro rows live in ``swe_tasks.py``.
+``validate_mode="golden"`` grades the baked /hud/gold.diff instead of the
+agent's edits (maintainer-only gold validation).
 """
 
-from env import coding_task, env, sdlc_task  # noqa: F401  (env re-exported for `hud eval tasks.py`)
+from __future__ import annotations
 
-TEST_COMMAND = "python3 -m pytest -q {test_files}"
+import asyncio
+import json
+import os
+import subprocess
+from pathlib import Path
 
+from hud.graders import BashGrader, EvaluationResult, LLMJudgeGrader, SubScore, combine
 
-def _bug(slug: str, task_id: str, description: str, test_files: list[str]):
-    task = coding_task(
-        description=description,
-        test_command=TEST_COMMAND,
-        base_ref=f"origin/{task_id}_baseline",
-        test_ref=f"origin/{task_id}_test",
-        golden_ref=f"origin/{task_id}_golden",
-        test_files=test_files,
-    )
-    task.slug = slug
-    return task
+from coding import repo as repo_lib
+from env import LOGS_DIR, REPO_DIR, VAULT_DIR, env, _setup
 
+PROMPT = (Path(__file__).parent / "task" / "prompt.md").read_text()
+GRADER = "/hud/grader/run_grading.sh"
+GOLD_DIFF = Path("/hud/gold.diff")
+# On blocker failure: reward = min(uncapped, BLOCKER_CAP + 0.5 * uncapped).
+BLOCKER_CAP = 0.2
 
-tasks = [
-    _bug(
-        "sentry-fix",
-        "sentry_fix",
-        "Fix a crash in the user profile endpoint.\n\n"
-        "The user profile service crashes with a KeyError for certain users. Some users\n"
-        "have incomplete profile data — their `profile` field may be None or missing\n"
-        "entirely. The service works fine for users with complete profiles but fails for\n"
-        "others. Investigate and fix the error handling in the user service.\n\n"
-        "Expected behavior when a user has no profile (the `profile` field is None or\n"
-        "absent): fall back to the user's top-level `name` for the display name and use an\n"
-        "empty string for the bio. Users with a complete profile keep their existing\n"
-        "`display_name` and `bio`.",
-        ["test_user_service.py"],
-    ),
-    _bug(
-        "notif-bug",
-        "notif_bug",
-        "Fix the broken notification system.\n\n"
-        "The notification system is completely silent — no notifications are generated when\n"
-        "tasks are created, assigned, or completed. The event handlers are registered and\n"
-        "the notification service is initialized, but events never reach their handlers.\n"
-        "Investigate the event routing pipeline and fix the issue.",
-        ["test_notifications.py"],
-    ),
-    _bug(
-        "settings-v2",
-        "settings_v2",
-        "Fix disappearing fields in API responses.\n\n"
-        "API responses for the settings and user endpoints are randomly dropping fields\n"
-        "that have values like 0, false, or empty string. Direct key lookups work fine,\n"
-        "but when responses are serialized to JSON, certain valid fields disappear. The\n"
-        "issue affects multiple endpoints and seems related to how data is iterated over\n"
-        "during serialization.",
-        ["test_settings.py"],
-    ),
-    _bug(
-        "webhook-bug",
-        "webhook_bug",
-        "Fix inconsistent webhook notification channels.\n\n"
-        "Webhook notifications work correctly on the first request for a given event type,\n"
-        "but subsequent requests for the same event type produce incorrect or duplicated\n"
-        "notification channels. The issue gets worse with repeated requests — channels\n"
-        "accumulate and sort order changes unexpectedly.",
-        ["test_notifications.py"],
-    ),
+# ─── ALL graders: name, weight, blocker?, kind, timeout ───────────────────
+# "bash" graders: name == function in run_grading.sh == hidden test it runs.
+# "judge": the LLM diff review; its criteria live in task/grader/judge.json.
+
+GRADERS = [
+    ("ordering_equivalence",   0.20, True,  "bash",   900),
+    ("pagination_invariants",  0.20, True,  "bash",   900),
+    ("throughput_discipline",  0.10, True,  "bash",   900),
+    ("n_plus_one",             0.10, False, "bash",   600),
+    ("regression_backcompat",  0.15, True,  "bash",  1800),
+    ("test_quality",           0.15, True,  "bash",  1800),
+    ("conventions_gates",      0.05, False, "bash",   900),
+    ("maintainer_review",      0.05, False, "judge", None),
 ]
 
+# The judge's question/criteria live with the other graders, in a file named
+# after its criterion: task/grader/<name>.judge.json. Only the API call
+# happens here, because it needs the captured diff and env-side credentials.
+_JUDGE_FILE = "maintainer_review.judge.json"
+_GRADER_SRC = Path(os.environ.get("GRADER_DIR", "/hud/grader"))
+if not (_GRADER_SRC / _JUDGE_FILE).is_file():  # local dev, outside the image
+    _GRADER_SRC = Path(__file__).parent / "task" / "grader"
+JUDGE = json.loads((_GRADER_SRC / _JUDGE_FILE).read_text())
 
-# The SDLC variant of sentry-fix: same bug, but the task arrives as a GitHub
-# issue and the deliverable is a pushed branch with a pull request.
-_sentry_fix_pr = sdlc_task(
-    description=(
-        "Issue #42 in the tracker reports a crash in the user profile endpoint. "
-        "Read the issue with the github tools, fix the bug, and ship the fix "
-        "through the normal review workflow."
-    ),
-    test_command=TEST_COMMAND,
-    base_ref="origin/sentry_fix_baseline",
-    test_ref="origin/sentry_fix_test",
-    golden_ref="origin/sentry_fix_golden",
-    test_files=["test_user_service.py"],
-    issues=[
-        {
-            "number": 42,
-            "title": "KeyError crash on user profile endpoint",
-            "body": (
-                "Some users crash the profile endpoint with a KeyError — their `profile` "
-                "field can be None or missing. Expected: fall back to the top-level `name` "
-                "for the display name and an empty string for the bio; users with a "
-                "complete profile keep their existing `display_name` and `bio`."
+# ─── substrate sidecar: DynamoDB Local on 127.0.0.1:8000 ─────────────────
+
+_DDB_JAR = Path("/opt/dynamodb-local/DynamoDBLocal.jar")
+_ddb_proc: subprocess.Popen | None = None
+
+
+@env.initialize
+async def _start_dynamodb() -> None:
+    """Spawn DynamoDB Local WITHOUT waiting for readiness.
+
+    Only grading needs it, so readiness is awaited in _grade(); blocking here
+    would delay the serve port past the platform's 60s introspection probe.
+    """
+    global _ddb_proc
+    if not _DDB_JAR.is_file():
+        return  # grading needs the image; local runs skip the sidecar
+    _ddb_proc = subprocess.Popen(
+        [
+            "java",
+            "-Djava.library.path=/opt/dynamodb-local/DynamoDBLocalLib",
+            "-jar", str(_DDB_JAR),
+            "-inMemory", "-port", "8000",
+        ],
+        cwd="/opt/dynamodb-local",
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+async def _await_dynamodb(timeout: float = 120.0) -> None:
+    if _ddb_proc is None:
+        return  # local substrate without the sidecar
+    deadline = asyncio.get_event_loop().time() + timeout
+    while True:
+        try:
+            _, writer = await asyncio.open_connection("127.0.0.1", 8000)
+            writer.close()
+            return
+        except OSError:
+            if asyncio.get_event_loop().time() > deadline:
+                raise RuntimeError("DynamoDB Local did not become ready") from None
+            await asyncio.sleep(0.25)
+
+
+@env.shutdown
+async def _stop_dynamodb() -> None:
+    global _ddb_proc
+    if _ddb_proc is not None:
+        _ddb_proc.terminate()
+        _ddb_proc = None
+
+
+# ─── grading machinery ─────────────────────────────────────────────────────
+
+
+def _slim_metadata(subscores) -> None:
+    """Bound subscore metadata so the grade frame stays small."""
+    for score in subscores:
+        meta = getattr(score, "metadata", None)
+        if not meta:
+            continue
+        params = meta.get("_parameters")
+        if isinstance(params, dict):
+            for key in ("answer", "question"):
+                if key in params and isinstance(params[key], str) and len(params[key]) > 300:
+                    params[key] = f"({key} elided; {len(params[key])} chars)"
+        for key in ("stdout", "stderr"):
+            value = meta.get(key)
+            if isinstance(value, str) and len(value) > 2500:
+                meta[key] = "…" + value[-2500:]
+
+
+async def _judge_diff(name: str, weight: float, diff: str) -> SubScore:
+    try:
+        return await LLMJudgeGrader.grade(
+            weight,
+            name=name,
+            answer=diff[:100_000],
+            criteria=list(JUDGE["criteria"]),
+            question=JUDGE["question"],
+        )
+    except Exception as exc:  # noqa: BLE001 - judge failure must not kill grading
+        return SubScore(
+            name=name, weight=0.0, value=0.0,
+            metadata={"judge_error": f"{type(exc).__name__}: {exc}"[:300]},
+        )
+
+
+async def _grade(validate_mode: str | None) -> EvaluationResult:
+    # The connected hidden tests need the DynamoDB Local sidecar (spawned at
+    # initialize without blocking; awaited here where it's actually used).
+    await _await_dynamodb()
+
+    # Hermetic lifecycle: restore the vaulted history, capture the diff,
+    # reset the worktree, re-apply the diff — then grade that state.
+    setup_commit = await repo_lib.restore_history(REPO_DIR, VAULT_DIR)
+    if validate_mode == "golden":
+        diff = GOLD_DIFF.read_text()
+    else:
+        diff = await repo_lib.capture_agent_diff(REPO_DIR, setup_commit)
+
+    if not diff.strip():
+        return EvaluationResult(reward=0.0, content="Empty diff: no changes were made.")
+
+    await repo_lib.reset_worktree(REPO_DIR, setup_commit)
+    apply_error = await repo_lib.apply_diff(REPO_DIR, diff, LOGS_DIR / "patch.diff")
+    if apply_error is not None:
+        return EvaluationResult(
+            reward=0.0, content="patch failed to apply", info={"git_apply": apply_error}
+        )
+
+    # One grader call per criterion, SEQUENTIAL (the bash ones share the
+    # runner tree). Subscore name == grader function name == hidden test.
+    subscores: list[SubScore] = []
+    for name, weight, _blocker, kind, timeout in GRADERS:
+        if kind == "bash":
+            subscores.append(
+                await BashGrader.grade(
+                    weight,
+                    name=name,
+                    command=f"bash {GRADER} {name}",
+                    cwd=str(REPO_DIR),
+                    timeout_seconds=timeout,
+                )
+            )
+        else:
+            subscores.append(await _judge_diff(name, weight, diff))
+
+    _slim_metadata(subscores)
+    result = await combine(*subscores)
+
+    judge_errors = {
+        s.name: s.metadata["judge_error"]
+        for s in subscores
+        if s.metadata and s.metadata.get("judge_error")
+    }
+    if judge_errors:
+        result.info["judge_errors"] = judge_errors
+
+    failed = sorted(
+        name for name, _w, blocker, _kind, _t in GRADERS
+        if blocker and next(s.value for s in subscores if s.name == name) < 1.0
+    )
+    if failed:
+        # Scaled cap: a blocker failure hurts a lot, but better partial work
+        # still scores higher than garbage (training signal > flat cap).
+        reward = min(result.reward, BLOCKER_CAP + 0.5 * result.reward)
+        return EvaluationResult(
+            reward=reward,
+            subscores=result.subscores,
+            info={**result.info, "uncapped_reward": result.reward, "failed_blockers": failed},
+            content=(
+                f"Blocker criteria failed ({', '.join(failed)}); "
+                f"reward scaled down to {reward:.3f} (uncapped {result.reward:.3f})."
             ),
-            "labels": ["bug"],
-        }
-    ],
+        )
+    return result
+
+
+@env.template(
+    id="fix_aggregate_listing",
+    description="Make Aggregate.list() scale; sharded listing must match unsharded behavior.",
 )
-_sentry_fix_pr.slug = "sentry-fix-pr"
-tasks.append(_sentry_fix_pr)
+async def fix_aggregate_listing(validate_mode: str | None = None):
+    if validate_mode not in (None, "golden"):
+        raise ValueError(f"unknown validate_mode: {validate_mode!r}")
+    await _setup()
+    if validate_mode == "golden":
+        # Agent work is ignored; the baked gold.diff gets graded instead.
+        _ = yield "Golden-validation run: no work is expected of you. Finish immediately."
+    else:
+        # prompt.md opens with its own workspace preamble; no template prefix.
+        _ = yield PROMPT
+    yield await _grade(validate_mode)
+
+
+tasks = [fix_aggregate_listing()]

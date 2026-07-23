@@ -1,0 +1,2 @@
+Removed to not contain the real solution — this folder serves as a structural example only.
+In a real task, this file holds the reference solution as a git diff (see gold.diff usage in tasks.py).

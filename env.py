@@ -80,11 +80,14 @@ INSTANCE_DIR = Path(os.environ.get("INSTANCE_DIR", "/hud/instance"))
 AGENT_UID = 1000
 AGENT_HOME = Path("/tmp/agent-home")  # noqa: S108 - container-local, created at setup
 
-env = Environment(name="coding")
+env = Environment(name="swe-task-example")
+
 
 # shell_uid is the privilege wall: the env process (root, in images) keeps the
 # vault and instance assets under /hud at mode 700; the uid-dropped agent can
 # edit the repo but never read the answer key. No-op off root (local).
+# (Requires hud>=0.6.12.dev0: earlier shell_uid recursively chowned the whole
+# workspace on the serving path, missing the deploy readiness probe.)
 _ws = Workspace(
     REPO_DIR,
     guest_path=str(REPO_DIR),
