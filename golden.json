@@ -1,0 +1,14 @@
+[
+  {
+    "env": "swe-task-example",
+    "id": "fix_aggregate_listing",
+    "slug": "golden-fix-aggregate-listing",
+    "args": { "validate_mode": "golden" }
+  },
+  {
+    "env": "example-in-memory-tls-material",
+    "id": "in-memory-tls-material",
+    "slug": "golden-in-memory-tls-material",
+    "args": { "validate_mode": "golden" }
+  }
+]
