@@ -1,27 +1,13 @@
-# REDACTED IN THIS EXAMPLE
+You are working in the repository at /workspace/repo (Node 24, pnpm 10; dependencies are already installed and the toolchain works offline). Your shell has no network access, so the repo's connected test suite (which needs a live DynamoDB Local instance) cannot be run here — it will be run against DynamoDB Local when your change is reviewed, so keep it green by construction. Validate your work with the offline gates: the unit test suite (`pnpm vitest run` inside packages/effect-dynamodb), lint, and typecheck. Please resolve the following ticket:
 
-The real prompt is not included so this task can't be copied. This file
-explains what belongs here.
+## Aggregate listing doesn't scale
 
-**This file is mandatory.** `tasks.py` reads it and yields it verbatim as the
-agent's first message.
+We drive our admin console's browse screens with `db.aggregates.X.list(filter, { limit, cursor })`. The console renders a single chronological feed — list-index sort-key order — fetching one page at a time. Two problems now that we have real data volume:
 
-## What a prompt contains
+1. **Listing is slow, and latency grows linearly with page size.** A page of 50 aggregates takes several seconds. An SDK-level trace of one `list()` call shows the underlying DynamoDB queries executing strictly one after another.
 
-**The ticket** (the actual task): written the way a senior engineer would
-assign the work. Intent-inferring, not solution-leaking:
+2. **Sharded listing is broken.** On our highest-write aggregate we configured the sharded list index (`cardinality`) to spread write load. On that aggregate `list()` ignores `limit`, always comes back with `cursor: null`, and the feed arrives grouped rather than in feed order. From the caller's perspective, listing a sharded aggregate needs to behave exactly like listing an unsharded one: same paging behavior, same cursor contract, same ordering.
 
-- Describe symptoms and business context, not the fix
-  (*"listing is slow and latency grows linearly with page size; an SDK-level
-  trace shows queries executing strictly one after another"*)
-- Include real-world constraints a teammate would mention
-  (*"we've had throttling incidents; cursors held by deployed clients must
-  keep working"*)
-- Mention file/function names only if a real ticket naturally would
-- Keep quality expectations realistic (*"all repo quality gates apply"*)
+One ops note: these tables run on modest provisioned throughput and we've had throttling incidents before when a deploy fanned requests out too aggressively. Also, cursors already held by deployed clients must keep working.
 
-## What NOT to put here
-
-- The intended solution or its shape (*"use a k-way merge..."*)
-- Hints about hidden tests or grading criteria
-- Anything an LLM would recognize as benchmark-speak - write like a human
+All repo quality gates apply.

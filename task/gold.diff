@@ -1,34 +1,1587 @@
-# REDACTED IN THIS EXAMPLE — the real reference solution is not included so
-# this task can't be copied. This file explains what belongs here.
-#
-# THIS FILE IS MANDATORY. A task without a gold diff cannot be accepted:
-# it is the only proof that the task is solvable and that the graders
-# reward a correct solution. Your submission must include it (as a private
-# gist/diff — never agent-accessible).
-#
-# WHAT THIS FILE IS
-# The gold (reference) solution as a single `git diff` against the pinned
-# base commit (the BASE_SHA in Dockerfile.hud). It is the answer key:
-# everything a mergeable solution would change — source fix, new tests,
-# and the repo's release bookkeeping (e.g. changeset / version bump).
-#
-# Produce it from your solved working tree:
-#     git diff <BASE_SHA> > task/gold.diff
-#
-# HOW IT IS USED
-# 1. It is baked into the image under /hud (root-only, mode 700) — the
-#    agent can never read it.
-# 2. Golden validation: running the task with validate_mode="golden"
-#    applies THIS diff instead of the agent's work and runs all graders.
-#    It must score ~1.0 — that proves your graders are fair (no false
-#    negatives on a correct solution). Run it once after every grader
-#    change:
-#        hud task grade <task-slug> --args '{"validate_mode": "golden"}'
-# 3. Reviewers can inspect it (trace viewer Source tab) to check your
-#    merge bar without cloning anything.
-#
-# REQUIREMENTS
-# - applies cleanly to the base commit (`git apply --check task/gold.diff`)
-# - passes every deterministic grader, including test_quality's
-#   anti-vacuity check (your new tests must FAIL on the unfixed code)
-# - satisfies the conventions gate (lint, typecheck, release bookkeeping)
+diff --git a/packages/effect-dynamodb-geo/CHANGELOG.md b/packages/effect-dynamodb-geo/CHANGELOG.md
+index 7b757e4..77c9f4c 100644
+--- a/packages/effect-dynamodb-geo/CHANGELOG.md
++++ b/packages/effect-dynamodb-geo/CHANGELOG.md
+@@ -1,5 +1,7 @@
+ # @effect-dynamodb/geo
+ 
++## 1.9.6
++
+ ## 1.9.5
+ 
+ ## 1.9.4
+diff --git a/packages/effect-dynamodb-geo/package.json b/packages/effect-dynamodb-geo/package.json
+index f7107be..67d3e75 100644
+--- a/packages/effect-dynamodb-geo/package.json
++++ b/packages/effect-dynamodb-geo/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "@effect-dynamodb/geo",
+-  "version": "1.9.5",
++  "version": "1.9.6",
+   "description": "Geospatial index and search for effect-dynamodb using H3 hexagonal grid",
+   "type": "module",
+   "license": "MIT",
+diff --git a/packages/effect-dynamodb/CHANGELOG.md b/packages/effect-dynamodb/CHANGELOG.md
+index 4489d74..f0cff1b 100644
+--- a/packages/effect-dynamodb/CHANGELOG.md
++++ b/packages/effect-dynamodb/CHANGELOG.md
+@@ -1,5 +1,20 @@
+ # effect-dynamodb
+ 
++## 1.9.6
++
++### Patch Changes
++
++- perf(aggregate): parallelize `list()` with bounded concurrency and paginate sharded list collections
++
++  `Aggregate.list()` previously assembled each page's aggregates strictly one after another — one full-partition query per aggregate on the page — so latency grew linearly with page size. And on sharded list collections (`cardinality` set) it ignored `limit` and always returned `cursor: null`, loading the entire dataset into memory.
++  - **Bounded parallel assembly** — root partitions are now fetched and assembled concurrently with an explicit bound (`LIST_CONCURRENCY = 10`, mirroring the cascade update bound). A page load is dominated by a handful of round trips instead of one per aggregate, while the bound keeps a large page from saturating modest provisioned throughput (deliberately not `"unbounded"`). Output order and fail-fast error semantics are unchanged, and each aggregate still assembles from its full partition — sub-aggregates and edges come back fully assembled.
++  - **Bounded shard fan-out** — sharded list queries run concurrently under the same bound.
++  - **Sharded pagination** — sharded lists now honor `limit` and return a cursor that round-trips until exhaustion. Shard pages merge in ascending list-SK order (UTF-8 byte order, matching DynamoDB's own key ordering; SK ties resolve to the lower shard), so a full walk returns every aggregate exactly once in a stable, deterministic order. The cursor is an opaque envelope of per-shard resume keys synthesized from the last item each shard contributed to the returned page — never the shard's raw `LastEvaluatedKey`, which would silently skip items fetched but cut by the page-level truncation. A malformed or wrong-format sharded cursor fails with a typed `ValidationError` instead of an untyped parse defect.
++  - **Back-compat** — the unsharded cursor format (base64 raw `LastEvaluatedKey` JSON) is unchanged, so cursors held by deployed clients keep working. The `ListOptions` / `ListResult` public shapes are unchanged.
++
++- Updated dependencies []:
++  - @effect-dynamodb/schema@1.9.6
++
+ ## 1.9.5
+ 
+ ### Patch Changes
+diff --git a/packages/effect-dynamodb/package.json b/packages/effect-dynamodb/package.json
+index 490105c..5307319 100644
+--- a/packages/effect-dynamodb/package.json
++++ b/packages/effect-dynamodb/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "effect-dynamodb",
+-  "version": "1.9.5",
++  "version": "1.9.6",
+   "description": "Effect TS ORM for DynamoDB — schema-driven entity modeling, single-table design, composite keys, transactions, and Stream-based pagination",
+   "type": "module",
+   "license": "MIT",
+diff --git a/packages/effect-dynamodb/src/Aggregate.ts b/packages/effect-dynamodb/src/Aggregate.ts
+index e9f5be1..7b86631 100644
+--- a/packages/effect-dynamodb/src/Aggregate.ts
++++ b/packages/effect-dynamodb/src/Aggregate.ts
+@@ -257,6 +257,12 @@ export interface Aggregate<
+    * Supports cursor-based pagination via `options.limit` and `options.cursor`.
+    * When `limit` is specified, returns at most that many aggregates plus a cursor
+    * for the next page. Without `limit`, returns all matching aggregates.
++   *
++   * Sharded lists (`cardinality` set) paginate too: shards are queried
++   * concurrently (bounded) and merged in ascending list-SK order (SK ties
++   * resolve to the lower shard), so a full pagination walk returns every
++   * aggregate exactly once in a stable, deterministic order. Cursors are
++   * opaque in both modes; treat them as such.
+    */
+   readonly list: (
+     filter?: Record<string, unknown>,
+@@ -980,9 +986,6 @@ const makeAggregate = <TSchema extends Schema.Top>(
+ 
+         const listConfig = config.list
+         const limit = options?.limit
+-        const startKey = options?.cursor
+-          ? (JSON.parse(atob(options.cursor)) as Record<string, AttributeValue>)
+-          : undefined
+ 
+         // Compose PK from filter values matching PK composites
+         const listPkComposites = KeyComposer.extractComposites(
+@@ -998,29 +1001,81 @@ const makeAggregate = <TSchema extends Schema.Top>(
+         }
+ 
+         let rootItems: Array<Record<string, unknown>>
+-        let nextKey: Record<string, AttributeValue> | undefined
++        let cursor: string | null
+ 
+         if (listConfig.cardinality) {
+-          // Fan out: query each shard in parallel, merge results
+-          // Pagination not supported for sharded lists — returns all results
+-          const shardQueries = Array.from({ length: listConfig.cardinality }, (_, shard) => {
+-            const shardPkValue = composeCollectionKey(config.schema, listConfig.name, [
+-              ...listPkComposites,
+-              String(shard),
+-            ])
+-            return queryListPartition(
+-              client,
+-              tableConfig,
+-              listConfig,
+-              config.schema,
+-              shardPkValue,
+-              skValues,
+-            )
++          // Fan out: query each shard concurrently (bounded), then merge the
++          // shard pages in ascending list-SK order and truncate to `limit`.
++          // The cursor is an opaque {@link ShardedListCursor} envelope of
++          // per-shard resume keys synthesized from the last item each shard
++          // actually contributed to the page (see mergeShardPages).
++          let envelope: ShardedListCursor | undefined
++          if (options?.cursor) {
++            envelope = decodeShardedListCursor(options.cursor)
++            if (envelope === undefined) {
++              return yield* new ValidationError({
++                entityType: aggregateName,
++                operation: "list",
++                cause:
++                  "Malformed sharded list cursor. Cursors are opaque and specific " +
++                  "to the collection's sharding config — pass back the `cursor` " +
++                  "returned by a previous list() call unchanged.",
++              })
++            }
++          }
++
++          // A shard missing from an incoming envelope is exhausted — skip it.
++          const shards = Array.from({ length: listConfig.cardinality }, (_, shard) => shard).filter(
++            (shard) => envelope === undefined || envelope.shards[String(shard)] !== undefined,
++          )
++
++          const shardResults = yield* Effect.all(
++            shards.map((shard) => {
++              const shardPkValue = composeCollectionKey(config.schema, listConfig.name, [
++                ...listPkComposites,
++                String(shard),
++              ])
++              return queryListPartition(
++                client,
++                tableConfig,
++                listConfig,
++                config.schema,
++                shardPkValue,
++                skValues,
++                // Upper bound: a single shard may have to fill the whole page.
++                limit,
++                envelope?.shards[String(shard)] ?? undefined,
++              )
++            }),
++            { concurrency: LIST_CONCURRENCY },
++          )
++
++          const merged = mergeShardPages(shardResults, listConfig.sk.field, limit)
++          rootItems = merged.items
++
++          // Rebuild the envelope: keep every shard that may still have items,
++          // resuming after its last EMITTED item (never the raw
++          // LastEvaluatedKey — items fetched but cut by the page-level
++          // truncation must be re-fetched, not skipped). A shard that fetched
++          // items but contributed none keeps its incoming resume position.
++          const nextShards: Record<string, Record<string, AttributeValue> | null> = {}
++          shardResults.forEach((result, index) => {
++            const shard = shards[index]
++            if (shard === undefined) return
++            const emitted = merged.consumed[index] ?? 0
++            const exhausted = result.lastKey === undefined && emitted === result.items.length
++            if (exhausted) return
++            const lastEmitted = emitted > 0 ? result.items[emitted - 1] : undefined
++            nextShards[String(shard)] = lastEmitted
++              ? shardResumeKey(lastEmitted, listConfig, config.pk.field)
++              : (envelope?.shards[String(shard)] ?? null)
+           })
+-          const shardResults = yield* Effect.all(shardQueries)
+-          rootItems = shardResults.flatMap((r) => r.items)
+-          nextKey = undefined
++          const nextEnvelope: ShardedListCursor = { _tag: "ShardedListCursor", shards: nextShards }
++          cursor = Object.keys(nextShards).length > 0 ? btoa(JSON.stringify(nextEnvelope)) : null
+         } else {
++          const startKey = options?.cursor
++            ? (JSON.parse(atob(options.cursor)) as Record<string, AttributeValue>)
++            : undefined
+           const listPkValue = composeCollectionKey(config.schema, listConfig.name, listPkComposites)
+           const result = yield* queryListPartition(
+             client,
+@@ -1033,34 +1088,43 @@ const makeAggregate = <TSchema extends Schema.Top>(
+             startKey,
+           )
+           rootItems = result.items
+-          nextKey = result.lastKey
++          // Raw LastEvaluatedKey cursor — format is pinned: deployed clients
++          // hold these cursors, so it must stay stable across releases.
++          cursor = result.lastKey ? btoa(JSON.stringify(result.lastKey)) : null
+         }
+ 
+-        // Extract PK composite values from each root item and assemble
+-        const aggregates: Array<Schema.Schema.Type<TSchema>> = []
+-        for (const rootItem of rootItems) {
+-          const key: Record<string, unknown> = {}
+-          for (const composite of config.pk.composite) {
+-            key[composite] = rootItem[composite]
+-          }
+-          const assembled = yield* Effect.gen(function* () {
+-            const { allItems } = yield* fetchPartition(key)
+-            if (allItems.length === 0) return undefined
+-
+-            const result = yield* assembleAggregate(
+-              decodeSchema,
+-              rootNode,
+-              allItems,
+-              contextFields,
+-              key,
+-              aggregateName,
+-            )
+-            return result as Schema.Schema.Type<TSchema>
+-          })
+-          if (assembled !== undefined) aggregates.push(assembled)
+-        }
+-
+-        const cursor = nextKey ? btoa(JSON.stringify(nextKey)) : null
++        // Extract PK composite values from each root item and assemble each
++        // aggregate's full partition. Assembly runs concurrently but bounded
++        // (LIST_CONCURRENCY) so a large page cannot saturate provisioned
++        // throughput; Effect.forEach preserves input order (results stay in
++        // list-index order) and fails fast on the first error, matching the
++        // semantics of the previous serial loop.
++        const assembled = yield* Effect.forEach(
++          rootItems,
++          (rootItem) =>
++            Effect.gen(function* () {
++              const key: Record<string, unknown> = {}
++              for (const composite of config.pk.composite) {
++                key[composite] = rootItem[composite]
++              }
++              const { allItems } = yield* fetchPartition(key)
++              if (allItems.length === 0) return undefined
++
++              const result = yield* assembleAggregate(
++                decodeSchema,
++                rootNode,
++                allItems,
++                contextFields,
++                key,
++                aggregateName,
++              )
++              return result as Schema.Schema.Type<TSchema>
++            }),
++          { concurrency: LIST_CONCURRENCY },
++        )
++        const aggregates = assembled.filter(
++          (aggregate): aggregate is Schema.Schema.Type<TSchema> => aggregate !== undefined,
++        )
+ 
+         return { data: aggregates, cursor }
+       }),
+@@ -2212,3 +2276,136 @@ const queryListPartition = (
+ 
+     return { items, lastKey }
+   })
++
++// ---------------------------------------------------------------------------
++// Internal: List concurrency + sharded list pagination
++// ---------------------------------------------------------------------------
++
++/**
++ * Maximum concurrent DynamoDB queries issued by `list()` — bounds both the
++ * sharded fan-out and the per-root partition assembly. Deliberately a bounded
++ * number (mirroring the cascade update bound in Entity.ts), never unlimited:
++ * each root assembly is a full-partition query, so a page of N aggregates
++ * fanned out without a bound would issue N simultaneous queries and can
++ * exhaust modest provisioned throughput.
++ */
++const LIST_CONCURRENCY = 10
++
++/**
++ * Opaque cursor envelope for sharded lists: per-shard resume keys, keyed by
++ * shard index. `null` resumes a shard from its beginning; a missing entry
++ * means the shard is exhausted. Resume keys are synthesized from the last item
++ * a shard contributed to the returned page — never the shard query's raw
++ * `LastEvaluatedKey`, which would skip items fetched but cut by the page-level
++ * truncation. Unsharded lists keep the original raw-LastEvaluatedKey cursor
++ * format (deployed clients hold those cursors).
++ *
++ * The envelope assumes `cardinality` is fixed for the duration of a pagination
++ * walk: a shard absent from an incoming envelope is treated as exhausted, so
++ * raising `cardinality` mid-walk leaves the new shards unread until a fresh
++ * (cursor-less) walk starts.
++ */
++interface ShardedListCursor {
++  readonly _tag: "ShardedListCursor"
++  readonly shards: Record<string, Record<string, AttributeValue> | null>
++}
++
++/**
++ * Decode and validate a sharded-list cursor. Returns `undefined` for anything
++ * that is not a well-formed {@link ShardedListCursor} — corrupted input, or a
++ * cursor minted by a different list format (e.g. an unsharded
++ * raw-LastEvaluatedKey cursor presented after `cardinality` was added to the
++ * config) — so the caller can fail with a typed `ValidationError` instead of
++ * a raw parse defect.
++ */
++const decodeShardedListCursor = (cursor: string): ShardedListCursor | undefined => {
++  try {
++    const parsed = JSON.parse(atob(cursor)) as Partial<ShardedListCursor> | null
++    return typeof parsed === "object" &&
++      parsed !== null &&
++      parsed._tag === "ShardedListCursor" &&
++      typeof parsed.shards === "object" &&
++      parsed.shards !== null
++      ? (parsed as ShardedListCursor)
++      : undefined
++  } catch {
++    return undefined
++  }
++}
++
++/**
++ * Build a GSI `ExclusiveStartKey` from an emitted root item. A GSI start key
++ * must carry BOTH the index keys and the table primary keys.
++ */
++const shardResumeKey = (
++  item: Record<string, unknown>,
++  listConfig: ListCollectionConfig,
++  tablePkField: string,
++): Record<string, AttributeValue> =>
++  toAttributeMap({
++    [listConfig.pk.field]: item[listConfig.pk.field],
++    [listConfig.sk.field]: item[listConfig.sk.field],
++    [tablePkField]: item[tablePkField],
++    sk: item.sk,
++  })
++
++/**
++ * True when `a` sorts strictly before `b` in Unicode code-point order — which,
++ * for well-formed strings, is exactly DynamoDB's UTF-8-byte ordering of string
++ * keys. JS `<` compares UTF-16 code units instead, which misorders
++ * astral-plane characters (surrogate pairs, e.g. emoji) against BMP characters
++ * in U+E000–U+FFFF.
++ */
++const utf8Before = (a: string, b: string): boolean => {
++  const length = Math.min(a.length, b.length)
++  let index = 0
++  while (index < length) {
++    const codePointA = a.codePointAt(index) ?? 0
++    const codePointB = b.codePointAt(index) ?? 0
++    if (codePointA !== codePointB) return codePointA < codePointB
++    // Equal code points have equal width, so both strings advance in lockstep.
++    index += codePointA > 0xffff ? 2 : 1
++  }
++  // One string is a prefix of the other — the shorter sorts first.
++  return a.length < b.length
++}
++
++/**
++ * K-way merge of per-shard pages in ascending list-SK order (UTF-8 byte
++ * order, matching DynamoDB's own key ordering), truncated to `limit`. Each
++ * shard's own order (the GSI's index order) is preserved — SK ties across
++ * shards resolve to the earlier page — so a per-shard resume key taken from
++ * the last emitted item is always consistent with DynamoDB's ordering within
++ * that shard. The merged order is deterministic, and concatenating the pages
++ * of a full pagination walk yields the global ascending list-SK order.
++ *
++ * Returns the merged page plus how many items were consumed (emitted) from
++ * each input page, positionally.
++ */
++const mergeShardPages = (
++  pages: ReadonlyArray<ListPartitionResult>,
++  skField: string,
++  limit: number | undefined,
++): { readonly items: Array<Record<string, unknown>>; readonly consumed: Array<number> } => {
++  const consumed = pages.map(() => 0)
++  const items: Array<Record<string, unknown>> = []
++  while (limit === undefined || items.length < limit) {
++    let best = -1
++    let bestSk: string | undefined
++    for (let index = 0; index < pages.length; index++) {
++      const head = pages[index]?.items[consumed[index] ?? 0]
++      if (head === undefined) continue
++      const sk = String(head[skField])
++      if (bestSk === undefined || utf8Before(sk, bestSk)) {
++        best = index
++        bestSk = sk
++      }
++    }
++    if (best === -1) break
++    const item = pages[best]?.items[consumed[best] ?? 0]
++    if (item === undefined) break
++    items.push(item)
++    consumed[best] = (consumed[best] ?? 0) + 1
++  }
++  return { items, consumed }
++}
+diff --git a/packages/effect-dynamodb/test/Aggregate.test.ts b/packages/effect-dynamodb/test/Aggregate.test.ts
+index 42e3546..ba3655d 100644
+--- a/packages/effect-dynamodb/test/Aggregate.test.ts
++++ b/packages/effect-dynamodb/test/Aggregate.test.ts
+@@ -2580,61 +2580,44 @@ describe("Aggregate write path", () => {
+ 
+     it.effect("GSI query: returns all aggregates with no filter (PK-only query)", () =>
+       Effect.gen(function* () {
+-        // GSI query returns root items
+-        mockListQuery
+-          .mockResolvedValueOnce({
+-            Items: [
+-              toAttributeMap({
+-                pk: "$myapp#v1#article#a-1",
+-                sk: "$myapp#v1#articleitem",
+-                gsi1pk: "$myapp#v1#articlelist",
+-                gsi1sk: "$myapp#v1#articlelist#alice#first",
+-                __edd_e__: "ArticleItem",
+-                articleId: "a-1",
+-                title: "First",
+-                author: "Alice",
+-                tags: [],
+-              }),
+-              toAttributeMap({
+-                pk: "$myapp#v1#article#a-2",
+-                sk: "$myapp#v1#articleitem",
+-                gsi1pk: "$myapp#v1#articlelist",
+-                gsi1sk: "$myapp#v1#articlelist#bob#second",
+-                __edd_e__: "ArticleItem",
+-                articleId: "a-2",
+-                title: "Second",
+-                author: "Bob",
+-                tags: ["ts"],
+-              }),
+-            ],
+-          })
+-          // Assembly queries (get each aggregate by PK)
+-          .mockResolvedValueOnce({
+-            Items: [
+-              toAttributeMap({
+-                pk: "$myapp#v1#article#a-1",
+-                sk: "$myapp#v1#articleitem",
+-                __edd_e__: "ArticleItem",
+-                articleId: "a-1",
+-                title: "First",
+-                author: "Alice",
+-                tags: [],
+-              }),
+-            ],
+-          })
+-          .mockResolvedValueOnce({
++        // Responses are routed by request (IndexName / :pk), not call arrival
++        // order — assembly queries run concurrently, so positional
++        // mockResolvedValueOnce chains would mis-associate responses.
++        const roots = [
++          { articleId: "a-1", title: "First", author: "Alice", tags: [] as Array<string> },
++          { articleId: "a-2", title: "Second", author: "Bob", tags: ["ts"] },
++        ]
++        mockListQuery.mockImplementation((input: Record<string, unknown>) => {
++          if (input.IndexName === "gsi1") {
++            // GSI query returns root items
++            return Promise.resolve({
++              Items: roots.map((root) =>
++                toAttributeMap({
++                  ...root,
++                  pk: `$myapp#v1#article#${root.articleId}`,
++                  sk: "$myapp#v1#articleitem",
++                  gsi1pk: "$myapp#v1#articlelist",
++                  gsi1sk: `$myapp#v1#articlelist#${root.author.toLowerCase()}#${root.title.toLowerCase()}`,
++                  __edd_e__: "ArticleItem",
++                }),
++              ),
++            })
++          }
++          // Assembly queries (get each aggregate's partition by PK)
++          const pk = (input.ExpressionAttributeValues as Record<string, { S: string }>)[":pk"]!.S
++          const root = roots.find((r) => pk === `$myapp#v1#article#${r.articleId}`)
++          if (!root) return Promise.reject(new Error(`unexpected assembly query for ${pk}`))
++          return Promise.resolve({
+             Items: [
+               toAttributeMap({
+-                pk: "$myapp#v1#article#a-2",
++                ...root,
++                pk,
+                 sk: "$myapp#v1#articleitem",
+                 __edd_e__: "ArticleItem",
+-                articleId: "a-2",
+-                title: "Second",
+-                author: "Bob",
+-                tags: ["ts"],
+               }),
+             ],
+           })
++        })
+ 
+         const results = yield* ListAggregate.list()
+ 
+@@ -2738,27 +2721,33 @@ describe("Aggregate write path", () => {
+           edges: {},
+         })
+ 
+-        // 3 shard queries — shard 0 has an item, shards 1 and 2 are empty
+-        mockListQuery
+-          .mockResolvedValueOnce({
+-            Items: [
+-              toAttributeMap({
+-                pk: "$myapp#v1#article#a-1",
+-                sk: "$myapp#v1#articleitem",
+-                gsi1pk: "$myapp#v1#articlelist#0",
+-                gsi1sk: "$myapp#v1#articlelist#alice",
+-                __edd_e__: "ArticleItem",
+-                articleId: "a-1",
+-                title: "First",
+-                author: "Alice",
+-                tags: [],
+-              }),
+-            ],
+-          })
+-          .mockResolvedValueOnce({ Items: [] })
+-          .mockResolvedValueOnce({ Items: [] })
++        // 3 shard queries — shard 0 has an item, shards 1 and 2 are empty.
++        // Shard queries run concurrently, so responses are routed by :pk
++        // rather than by call arrival order.
++        mockListQuery.mockImplementation((input: Record<string, unknown>) => {
++          const pk = (input.ExpressionAttributeValues as Record<string, { S: string }>)[":pk"]!.S
++          if (pk === "$myapp#v1#articlelist#0") {
++            return Promise.resolve({
++              Items: [
++                toAttributeMap({
++                  pk: "$myapp#v1#article#a-1",
++                  sk: "$myapp#v1#articleitem",
++                  gsi1pk: "$myapp#v1#articlelist#0",
++                  gsi1sk: "$myapp#v1#articlelist#alice",
++                  __edd_e__: "ArticleItem",
++                  articleId: "a-1",
++                  title: "First",
++                  author: "Alice",
++                  tags: [],
++                }),
++              ],
++            })
++          }
++          if (pk === "$myapp#v1#articlelist#1" || pk === "$myapp#v1#articlelist#2") {
++            return Promise.resolve({ Items: [] })
++          }
+           // Assembly query for the one found item
+-          .mockResolvedValueOnce({
++          return Promise.resolve({
+             Items: [
+               toAttributeMap({
+                 pk: "$myapp#v1#article#a-1",
+@@ -2771,6 +2760,7 @@ describe("Aggregate write path", () => {
+               }),
+             ],
+           })
++        })
+ 
+         const results = yield* ShardedAggregate.list()
+ 
+@@ -2781,19 +2771,16 @@ describe("Aggregate write path", () => {
+         // 3 shard queries + 1 assembly query
+         expect(mockListQuery).toHaveBeenCalledTimes(4)
+ 
+-        // Verify shard PKs
+-        const shard0Input = mockListQuery.mock.calls[0]![0]
+-        expect(shard0Input.ExpressionAttributeValues[":pk"]).toEqual({
+-          S: "$myapp#v1#articlelist#0",
+-        })
+-        const shard1Input = mockListQuery.mock.calls[1]![0]
+-        expect(shard1Input.ExpressionAttributeValues[":pk"]).toEqual({
+-          S: "$myapp#v1#articlelist#1",
+-        })
+-        const shard2Input = mockListQuery.mock.calls[2]![0]
+-        expect(shard2Input.ExpressionAttributeValues[":pk"]).toEqual({
+-          S: "$myapp#v1#articlelist#2",
+-        })
++        // Verify every shard PK was queried (order-independent)
++        const shardPks = mockListQuery.mock.calls
++          .map((call) => call[0].ExpressionAttributeValues[":pk"].S as string)
++          .filter((pk) => pk.startsWith("$myapp#v1#articlelist#"))
++          .sort()
++        expect(shardPks).toEqual([
++          "$myapp#v1#articlelist#0",
++          "$myapp#v1#articlelist#1",
++          "$myapp#v1#articlelist#2",
++        ])
+       }).pipe(Effect.provide(ListLayer)),
+     )
+ 
+@@ -2912,81 +2899,655 @@ describe("Aggregate write path", () => {
+ 
+     it.effect("pagination: returns all items with null cursor when no limit specified", () =>
+       Effect.gen(function* () {
+-        // GSI query returns items across two DynamoDB pages (no limit)
+-        mockListQuery
+-          .mockResolvedValueOnce({
+-            Items: [
+-              toAttributeMap({
+-                pk: "$myapp#v1#article#a-1",
+-                sk: "$myapp#v1#articleitem",
+-                gsi1pk: "$myapp#v1#articlelist",
+-                gsi1sk: "$myapp#v1#articlelist#alice#first",
+-                __edd_e__: "ArticleItem",
+-                articleId: "a-1",
+-                title: "First",
+-                author: "Alice",
+-                tags: [],
+-              }),
+-            ],
+-            LastEvaluatedKey: {
+-              gsi1pk: { S: "$myapp#v1#articlelist" },
+-              gsi1sk: { S: "$myapp#v1#articlelist#alice#first" },
+-              pk: { S: "$myapp#v1#article#a-1" },
+-              sk: { S: "$myapp#v1#articleitem" },
++        // GSI query returns items across two DynamoDB pages (no limit).
++        // Responses are routed by request (IndexName / ExclusiveStartKey / :pk)
++        // rather than call arrival order — see the PK-only query test above.
++        mockListQuery.mockImplementation((input: Record<string, unknown>) => {
++          if (input.IndexName === "gsi1") {
++            return input.ExclusiveStartKey === undefined
++              ? Promise.resolve({
++                  Items: [
++                    toAttributeMap({
++                      pk: "$myapp#v1#article#a-1",
++                      sk: "$myapp#v1#articleitem",
++                      gsi1pk: "$myapp#v1#articlelist",
++                      gsi1sk: "$myapp#v1#articlelist#alice#first",
++                      __edd_e__: "ArticleItem",
++                      articleId: "a-1",
++                      title: "First",
++                      author: "Alice",
++                      tags: [],
++                    }),
++                  ],
++                  LastEvaluatedKey: {
++                    gsi1pk: { S: "$myapp#v1#articlelist" },
++                    gsi1sk: { S: "$myapp#v1#articlelist#alice#first" },
++                    pk: { S: "$myapp#v1#article#a-1" },
++                    sk: { S: "$myapp#v1#articleitem" },
++                  },
++                })
++              : Promise.resolve({
++                  Items: [
++                    toAttributeMap({
++                      pk: "$myapp#v1#article#a-2",
++                      sk: "$myapp#v1#articleitem",
++                      gsi1pk: "$myapp#v1#articlelist",
++                      gsi1sk: "$myapp#v1#articlelist#bob#second",
++                      __edd_e__: "ArticleItem",
++                      articleId: "a-2",
++                      title: "Second",
++                      author: "Bob",
++                      tags: ["ts"],
++                    }),
++                  ],
++                })
++          }
++          // Assembly queries for both items, routed by partition PK
++          const pk = (input.ExpressionAttributeValues as Record<string, { S: string }>)[":pk"]!.S
++          return pk === "$myapp#v1#article#a-1"
++            ? Promise.resolve({
++                Items: [
++                  toAttributeMap({
++                    pk,
++                    sk: "$myapp#v1#articleitem",
++                    __edd_e__: "ArticleItem",
++                    articleId: "a-1",
++                    title: "First",
++                    author: "Alice",
++                    tags: [],
++                  }),
++                ],
++              })
++            : Promise.resolve({
++                Items: [
++                  toAttributeMap({
++                    pk,
++                    sk: "$myapp#v1#articleitem",
++                    __edd_e__: "ArticleItem",
++                    articleId: "a-2",
++                    title: "Second",
++                    author: "Bob",
++                    tags: ["ts"],
++                  }),
++                ],
++              })
++        })
++
++        const results = yield* ListAggregate.list()
++
++        expect(results.data).toHaveLength(2)
++        expect(results.cursor).toBeNull()
++
++        // Without limit, no Limit param is sent
++        const gsiInput = mockListQuery.mock.calls[0]![0]
++        expect(gsiInput.Limit).toBeUndefined()
++      }).pipe(Effect.provide(ListLayer)),
++    )
++
++    it.effect(
++      "sharded pagination: cursor walk yields every aggregate exactly once when limit truncates mid-shard",
++      () =>
++        Effect.gen(function* () {
++          const ShardedAggregate = Aggregate.make(Article, {
++            table: MainTable,
++            schema: AppSchema,
++            pk: { field: "pk", composite: ["articleId"] },
++            collection: {
++              index: "lsi1",
++              name: "article",
++              sk: { field: "lsi1sk", composite: [] },
++            },
++            list: {
++              index: "gsi1",
++              name: "articlelist",
++              pk: { field: "gsi1pk", composite: [] },
++              sk: { field: "gsi1sk", composite: ["title"] },
++              cardinality: 2,
+             },
++            root: { entityType: "ArticleItem" },
++            edges: {},
+           })
+-          .mockResolvedValueOnce({
+-            Items: [
+-              toAttributeMap({
+-                pk: "$myapp#v1#article#a-2",
+-                sk: "$myapp#v1#articleitem",
+-                gsi1pk: "$myapp#v1#articlelist",
+-                gsi1sk: "$myapp#v1#articlelist#bob#second",
+-                __edd_e__: "ArticleItem",
+-                articleId: "a-2",
+-                title: "Second",
+-                author: "Bob",
+-                tags: ["ts"],
+-              }),
+-            ],
++
++          const article = (n: number) => ({
++            articleId: `a-${n}`,
++            title: `t${n}`,
++            author: "alice",
++            tags: [] as Array<string>,
+           })
+-          // Assembly queries for both items
+-          .mockResolvedValueOnce({
+-            Items: [
++          // Simulated shard contents, each in its index (list-SK) order
++          const shardContents: Record<string, Array<ReturnType<typeof article>>> = {
++            "$myapp#v1#articlelist#0": [article(1), article(3), article(5)],
++            "$myapp#v1#articlelist#1": [article(2), article(4)],
++          }
++          const allArticles = Object.values(shardContents).flat()
++
++          mockListQuery.mockImplementation((input: Record<string, unknown>) => {
++            const pk = (input.ExpressionAttributeValues as Record<string, { S: string }>)[":pk"]!.S
++            const shard = shardContents[pk]
++            if (shard) {
++              // Simulate DynamoDB shard-query semantics: resume strictly after
++              // ExclusiveStartKey, honor Limit, report LastEvaluatedKey while
++              // more items remain.
++              let start = 0
++              const startKey = input.ExclusiveStartKey as Record<string, { S: string }> | undefined
++              if (startKey !== undefined) {
++                // A GSI ExclusiveStartKey must carry BOTH the index keys and
++                // the table primary keys.
++                expect(Object.keys(startKey).sort()).toEqual(["gsi1pk", "gsi1sk", "pk", "sk"])
++                const afterPk = startKey.pk!.S
++                start = shard.findIndex((a) => `$myapp#v1#article#${a.articleId}` === afterPk) + 1
++                // The resume key must point at a real item of this shard
++                expect(start).toBeGreaterThan(0)
++              }
++              const queryLimit = input.Limit as number | undefined
++              const end = queryLimit !== undefined ? start + queryLimit : shard.length
++              const window = shard.slice(start, end)
++              const last = window[window.length - 1]
++              const more = start + window.length < shard.length
++              return Promise.resolve({
++                Items: window.map((a) =>
++                  toAttributeMap({
++                    ...a,
++                    pk: `$myapp#v1#article#${a.articleId}`,
++                    sk: "$myapp#v1#articleitem",
++                    gsi1pk: pk,
++                    gsi1sk: `$myapp#v1#articlelist#${a.title}`,
++                    __edd_e__: "ArticleItem",
++                  }),
++                ),
++                ...(more && last
++                  ? {
++                      LastEvaluatedKey: {
++                        gsi1pk: { S: pk },
++                        gsi1sk: { S: `$myapp#v1#articlelist#${last.title}` },
++                        pk: { S: `$myapp#v1#article#${last.articleId}` },
++                        sk: { S: "$myapp#v1#articleitem" },
++                      },
++                    }
++                  : {}),
++              })
++            }
++            // Assembly query — routed by partition PK
++            const source = allArticles.find((a) => pk === `$myapp#v1#article#${a.articleId}`)
++            if (!source) return Promise.reject(new Error(`unexpected query for ${pk}`))
++            return Promise.resolve({
++              Items: [
++                toAttributeMap({
++                  ...source,
++                  pk,
++                  sk: "$myapp#v1#articleitem",
++                  __edd_e__: "ArticleItem",
++                }),
++              ],
++            })
++          })
++
++          // Walk pages of 2 until the cursor is exhausted. shard 0 holds
++          // t1/t3/t5, shard 1 holds t2/t4, so every page boundary truncates
++          // mid-shard: page 1 fetches a-3 from shard 0 but cuts it from the
++          // page — the walk must re-surface it (a cursor built from the raw
++          // LastEvaluatedKey would skip it).
++          const pages: Array<Array<string>> = []
++          let cursor: string | undefined
++          do {
++            const page = yield* ShardedAggregate.list(undefined, { limit: 2, cursor })
++            expect(page.data.length).toBeLessThanOrEqual(2)
++            pages.push(page.data.map((a) => a.articleId))
++            cursor = page.cursor ?? undefined
++          } while (cursor !== undefined)
++
++          // No skips, no duplicates, deterministic ascending list-SK order
++          expect(pages).toEqual([["a-1", "a-2"], ["a-3", "a-4"], ["a-5"]])
++
++          // Shard 1 was exhausted after page 2 and dropped from the cursor —
++          // the final page must not have queried it again.
++          const shard1Queries = mockListQuery.mock.calls.filter(
++            (call) => call[0].ExpressionAttributeValues[":pk"].S === "$myapp#v1#articlelist#1",
++          )
++          expect(shard1Queries).toHaveLength(2)
++        }).pipe(Effect.provide(ListLayer)),
++    )
++
++    it.effect(
++      "sharded merge: follows DynamoDB's UTF-8 key order and resolves SK ties to the lower shard",
++      () =>
++        Effect.gen(function* () {
++          const ShardedAggregate = Aggregate.make(Article, {
++            table: MainTable,
++            schema: AppSchema,
++            pk: { field: "pk", composite: ["articleId"] },
++            collection: {
++              index: "lsi1",
++              name: "article",
++              sk: { field: "lsi1sk", composite: [] },
++            },
++            list: {
++              index: "gsi1",
++              name: "articlelist",
++              pk: { field: "gsi1pk", composite: [] },
++              sk: { field: "gsi1sk", composite: ["title"] },
++              cardinality: 2,
++            },
++            root: { entityType: "ArticleItem" },
++            edges: {},
++          })
++
++          // Titles chosen so UTF-16 code-unit order (JS `<`) disagrees with
++          // DynamoDB's UTF-8 byte order: the astral 😀 (U+1F600, surrogate
++          // pair D83D DE00) compares BELOW the BMP U+FFFB under `<` but sorts
++          // AFTER it in UTF-8 bytes. "same" in both shards pins the tie-break.
++          const shardContents: Record<string, Array<{ articleId: string; title: string }>> = {
++            // Each shard lists its items in DynamoDB index (UTF-8 byte) order
++            "$myapp#v1#articlelist#0": [
++              { articleId: "a-tie0", title: "same" },
++              { articleId: "a-emoji", title: "\u{1F600}" },
++            ],
++            "$myapp#v1#articlelist#1": [
++              { articleId: "a-tie1", title: "same" },
++              { articleId: "a-bmp", title: "\uFFFB" },
++            ],
++          }
++          const allArticles = Object.values(shardContents).flat()
++
++          mockListQuery.mockImplementation((input: Record<string, unknown>) => {
++            const pk = (input.ExpressionAttributeValues as Record<string, { S: string }>)[":pk"]!.S
++            const shard = shardContents[pk]
++            const toItem = (a: { articleId: string; title: string }, shardPk?: string) =>
+               toAttributeMap({
+-                pk: "$myapp#v1#article#a-1",
++                ...a,
++                author: "alice",
++                tags: [],
++                pk: `$myapp#v1#article#${a.articleId}`,
+                 sk: "$myapp#v1#articleitem",
+                 __edd_e__: "ArticleItem",
+-                articleId: "a-1",
+-                title: "First",
+-                author: "Alice",
+-                tags: [],
+-              }),
+-            ],
++                ...(shardPk !== undefined
++                  ? { gsi1pk: shardPk, gsi1sk: `$myapp#v1#articlelist#${a.title}` }
++                  : {}),
++              })
++            if (shard) {
++              return Promise.resolve({ Items: shard.map((a) => toItem(a, pk)) })
++            }
++            // Assembly query — routed by partition PK
++            const source = allArticles.find((a) => pk === `$myapp#v1#article#${a.articleId}`)
++            if (!source) return Promise.reject(new Error(`unexpected query for ${pk}`))
++            return Promise.resolve({ Items: [toItem(source)] })
+           })
+-          .mockResolvedValueOnce({
++
++          const results = yield* ShardedAggregate.list()
++
++          // "same" ties resolve to shard 0 first; U+FFFB precedes the astral
++          // U+1F600 (a plain `<` merge would emit a-emoji before a-bmp)
++          expect(results.data.map((a) => a.articleId)).toEqual([
++            "a-tie0",
++            "a-tie1",
++            "a-bmp",
++            "a-emoji",
++          ])
++          expect(results.cursor).toBeNull()
++        }).pipe(Effect.provide(ListLayer)),
++    )
++
++    it.effect(
++      "sharded pagination: rejects a malformed or unsharded-format cursor with ValidationError",
++      () =>
++        Effect.gen(function* () {
++          const ShardedAggregate = Aggregate.make(Article, {
++            table: MainTable,
++            schema: AppSchema,
++            pk: { field: "pk", composite: ["articleId"] },
++            collection: {
++              index: "lsi1",
++              name: "article",
++              sk: { field: "lsi1sk", composite: [] },
++            },
++            list: {
++              index: "gsi1",
++              name: "articlelist",
++              pk: { field: "gsi1pk", composite: [] },
++              sk: { field: "gsi1sk", composite: ["title"] },
++              cardinality: 2,
++            },
++            root: { entityType: "ArticleItem" },
++            edges: {},
++          })
++
++          // Not base64 JSON at all
++          const garbage = yield* Effect.flip(
++            ShardedAggregate.list(undefined, { limit: 2, cursor: "not-a-cursor" }),
++          )
++          expect(garbage._tag).toBe("ValidationError")
++
++          // A raw unsharded cursor (base64 LastEvaluatedKey JSON) is not a
++          // sharded envelope — e.g. held over from before `cardinality` was set
++          const rawKeyCursor = btoa(
++            JSON.stringify({
++              gsi1pk: { S: "$myapp#v1#articlelist" },
++              gsi1sk: { S: "$myapp#v1#articlelist#alice" },
++              pk: { S: "$myapp#v1#article#a-1" },
++              sk: { S: "$myapp#v1#articleitem" },
++            }),
++          )
++          const wrongFormat = yield* Effect.flip(
++            ShardedAggregate.list(undefined, { limit: 2, cursor: rawKeyCursor }),
++          )
++          expect(wrongFormat._tag).toBe("ValidationError")
++
++          // Rejected before any shard query was issued
++          expect(mockListQuery).not.toHaveBeenCalled()
++        }).pipe(Effect.provide(ListLayer)),
++    )
++
++    it.effect("assembly: runs concurrently with a bounded max in-flight, preserving order", () =>
++      Effect.gen(function* () {
++        const ids = Array.from({ length: 25 }, (_, i) => `a-${String(i).padStart(2, "0")}`)
++
++        let inFlight = 0
++        let maxInFlight = 0
++        mockListQuery.mockImplementation(async (input: Record<string, unknown>) => {
++          if (input.IndexName === "gsi1") {
++            return {
++              Items: ids.map((articleId) =>
++                toAttributeMap({
++                  pk: `$myapp#v1#article#${articleId}`,
++                  sk: "$myapp#v1#articleitem",
++                  gsi1pk: "$myapp#v1#articlelist",
++                  gsi1sk: `$myapp#v1#articlelist#alice#${articleId}`,
++                  __edd_e__: "ArticleItem",
++                  articleId,
++                  title: articleId,
++                  author: "alice",
++                  tags: [],
++                }),
++              ),
++            }
++          }
++          inFlight++
++          maxInFlight = Math.max(maxInFlight, inFlight)
++          // Hold the response until the next macrotask so overlapping
++          // assembly queries are observable
++          await new Promise((resolve) => setTimeout(resolve, 0))
++          inFlight--
++          const pk = (input.ExpressionAttributeValues as Record<string, { S: string }>)[":pk"]!.S
++          const articleId = pk.slice("$myapp#v1#article#".length)
++          return {
+             Items: [
+               toAttributeMap({
+-                pk: "$myapp#v1#article#a-2",
++                pk,
+                 sk: "$myapp#v1#articleitem",
+                 __edd_e__: "ArticleItem",
+-                articleId: "a-2",
+-                title: "Second",
+-                author: "Bob",
+-                tags: ["ts"],
++                articleId,
++                title: articleId,
++                author: "alice",
++                tags: [],
+               }),
+             ],
+-          })
++          }
++        })
+ 
+         const results = yield* ListAggregate.list()
+ 
+-        expect(results.data).toHaveLength(2)
++        // Order preserved: results follow the list-GSI order of the roots
++        expect(results.data.map((a) => a.articleId)).toEqual(ids)
++        // Assembly queries overlapped (no serial N+1)...
++        expect(maxInFlight).toBeGreaterThan(1)
++        // ...but never exceeded the bound (LIST_CONCURRENCY)
++        expect(maxInFlight).toBeLessThanOrEqual(10)
++      }).pipe(Effect.provide(ListLayer)),
++    )
++
++    it.effect("sharded fan-out: shard queries run concurrently with a bounded max in-flight", () =>
++      Effect.gen(function* () {
++        const WideShardedAggregate = Aggregate.make(Article, {
++          table: MainTable,
++          schema: AppSchema,
++          pk: { field: "pk", composite: ["articleId"] },
++          collection: {
++            index: "lsi1",
++            name: "article",
++            sk: { field: "lsi1sk", composite: [] },
++          },
++          list: {
++            index: "gsi1",
++            name: "articlelist",
++            pk: { field: "gsi1pk", composite: [] },
++            sk: { field: "gsi1sk", composite: ["author"] },
++            cardinality: 12,
++          },
++          root: { entityType: "ArticleItem" },
++          edges: {},
++        })
++
++        let inFlight = 0
++        let maxInFlight = 0
++        mockListQuery.mockImplementation(async () => {
++          inFlight++
++          maxInFlight = Math.max(maxInFlight, inFlight)
++          await new Promise((resolve) => setTimeout(resolve, 0))
++          inFlight--
++          return { Items: [] }
++        })
++
++        const results = yield* WideShardedAggregate.list()
++
++        expect(results.data).toHaveLength(0)
+         expect(results.cursor).toBeNull()
++        // Every shard queried, concurrently but bounded
++        expect(mockListQuery).toHaveBeenCalledTimes(12)
++        expect(maxInFlight).toBeGreaterThan(1)
++        expect(maxInFlight).toBeLessThanOrEqual(10)
++      }).pipe(Effect.provide(ListLayer)),
++    )
+ 
+-        // Without limit, no Limit param is sent
+-        const gsiInput = mockListQuery.mock.calls[0]![0]
+-        expect(gsiInput.Limit).toBeUndefined()
++    it.effect("assembly: preserves list order when responses resolve out of order", () =>
++      Effect.gen(function* () {
++        const partition = (articleId: string, title: string) => ({
++          Items: [
++            toAttributeMap({
++              pk: `$myapp#v1#article#${articleId}`,
++              sk: "$myapp#v1#articleitem",
++              __edd_e__: "ArticleItem",
++              articleId,
++              title,
++              author: "alice",
++              tags: [],
++            }),
++          ],
++        })
++
++        mockListQuery.mockImplementation(async (input: Record<string, unknown>) => {
++          if (input.IndexName === "gsi1") {
++            return {
++              Items: [
++                toAttributeMap({
++                  pk: "$myapp#v1#article#a-1",
++                  sk: "$myapp#v1#articleitem",
++                  gsi1pk: "$myapp#v1#articlelist",
++                  gsi1sk: "$myapp#v1#articlelist#alice#first",
++                  __edd_e__: "ArticleItem",
++                  articleId: "a-1",
++                  title: "First",
++                  author: "alice",
++                  tags: [],
++                }),
++                toAttributeMap({
++                  pk: "$myapp#v1#article#a-2",
++                  sk: "$myapp#v1#articleitem",
++                  gsi1pk: "$myapp#v1#articlelist",
++                  gsi1sk: "$myapp#v1#articlelist#alice#second",
++                  __edd_e__: "ArticleItem",
++                  articleId: "a-2",
++                  title: "Second",
++                  author: "alice",
++                  tags: [],
++                }),
++              ],
++            }
++          }
++          const pk = (input.ExpressionAttributeValues as Record<string, { S: string }>)[":pk"]!.S
++          if (pk === "$myapp#v1#article#a-1") {
++            // a-1's partition resolves last — output must still follow the
++            // list-GSI order, not response arrival order
++            await new Promise((resolve) => setTimeout(resolve, 5))
++            return partition("a-1", "First")
++          }
++          return partition("a-2", "Second")
++        })
++
++        const results = yield* ListAggregate.list()
++
++        expect(results.data.map((a) => a.articleId)).toEqual(["a-1", "a-2"])
+       }).pipe(Effect.provide(ListLayer)),
+     )
++
++    it.effect(
++      "assembly: fully assembles edges (one + many children) for every listed aggregate",
++      () =>
++        Effect.gen(function* () {
++          class ListedPost extends Schema.Class<ListedPost>("ListedPost")({
++            postId: Schema.String,
++            title: Schema.String,
++            author: Schema.Struct({ name: Schema.String }),
++            comments: Schema.Array(Schema.Struct({ user: Schema.String, text: Schema.String })),
++          }) {}
++
++          const PostAggregate = Aggregate.make(ListedPost, {
++            table: MainTable,
++            schema: AppSchema,
++            pk: { field: "pk", composite: ["postId"] },
++            collection: {
++              index: "lsi1",
++              name: "post",
++              sk: { field: "lsi1sk", composite: [] },
++            },
++            list: {
++              index: "gsi1",
++              name: "postlist",
++              pk: { field: "gsi1pk", composite: [] },
++              sk: { field: "gsi1sk", composite: ["title"] },
++            },
++            root: { entityType: "PostItem" },
++            edges: {
++              author: Aggregate.one("author", { entityType: "PostAuthor" }),
++              comments: Aggregate.many("comments", { entityType: "PostComment" }),
++            },
++          })
++
++          const postIds = ["p-1", "p-2"]
++          mockListQuery.mockImplementation((input: Record<string, unknown>) => {
++            if (input.IndexName === "gsi1") {
++              return Promise.resolve({
++                Items: postIds.map((postId) =>
++                  toAttributeMap({
++                    postId,
++                    title: `Title ${postId}`,
++                    pk: `$myapp#v1#post#${postId}`,
++                    sk: "$myapp#v1#postitem",
++                    gsi1pk: "$myapp#v1#postlist",
++                    gsi1sk: `$myapp#v1#postlist#title ${postId}`,
++                    __edd_e__: "PostItem",
++                  }),
++                ),
++              })
++            }
++            // Full partition per aggregate: root + one-edge + many-edge items.
++            // A roots-only fetch (e.g. BatchGetItem on the root keys) would
++            // return aggregates with these children missing.
++            const pk = (input.ExpressionAttributeValues as Record<string, { S: string }>)[":pk"]!.S
++            const postId = pk.slice("$myapp#v1#post#".length)
++            if (!postIds.includes(postId)) {
++              return Promise.reject(new Error(`unexpected assembly query for ${pk}`))
++            }
++            return Promise.resolve({
++              Items: [
++                toAttributeMap({
++                  postId,
++                  title: `Title ${postId}`,
++                  pk,
++                  lsi1sk: "$myapp#v1#post",
++                  __edd_e__: "PostItem",
++                }),
++                toAttributeMap({
++                  name: `Author of ${postId}`,
++                  pk,
++                  lsi1sk: "$myapp#v1#postauthor",
++                  __edd_e__: "PostAuthor",
++                }),
++                toAttributeMap({
++                  user: "u1",
++                  text: `${postId} c1`,
++                  pk,
++                  lsi1sk: "$myapp#v1#postcomment#1",
++                  __edd_e__: "PostComment",
++                }),
++                toAttributeMap({
++                  user: "u2",
++                  text: `${postId} c2`,
++                  pk,
++                  lsi1sk: "$myapp#v1#postcomment#2",
++                  __edd_e__: "PostComment",
++                }),
++              ],
++            })
++          })
++
++          const results = yield* PostAggregate.list()
++
++          expect(results.data).toHaveLength(2)
++          for (const post of results.data) {
++            expect(post.author.name).toBe(`Author of ${post.postId}`)
++            expect(post.comments.map((c) => c.text)).toEqual([
++              `${post.postId} c1`,
++              `${post.postId} c2`,
++            ])
++          }
++        }).pipe(Effect.provide(ListLayer)),
++    )
++
++    it.effect(
++      "assembly: a failing partition query fails the whole list with the tagged error",
++      () =>
++        Effect.gen(function* () {
++          mockListQuery.mockImplementation((input: Record<string, unknown>) => {
++            if (input.IndexName === "gsi1") {
++              return Promise.resolve({
++                Items: ["a-1", "a-2"].map((articleId) =>
++                  toAttributeMap({
++                    pk: `$myapp#v1#article#${articleId}`,
++                    sk: "$myapp#v1#articleitem",
++                    gsi1pk: "$myapp#v1#articlelist",
++                    gsi1sk: `$myapp#v1#articlelist#alice#${articleId}`,
++                    __edd_e__: "ArticleItem",
++                    articleId,
++                    title: articleId,
++                    author: "alice",
++                    tags: [],
++                  }),
++                ),
++              })
++            }
++            const pk = (input.ExpressionAttributeValues as Record<string, { S: string }>)[":pk"]!.S
++            if (pk === "$myapp#v1#article#a-2") {
++              return Promise.reject(new Error("provisioned throughput exceeded"))
++            }
++            return Promise.resolve({
++              Items: [
++                toAttributeMap({
++                  pk,
++                  sk: "$myapp#v1#articleitem",
++                  __edd_e__: "ArticleItem",
++                  articleId: "a-1",
++                  title: "a-1",
++                  author: "alice",
++                  tags: [],
++                }),
++              ],
++            })
++          })
++
++          const error = yield* Effect.flip(ListAggregate.list())
++
++          expect(error._tag).toBe("DynamoError")
++        }).pipe(Effect.provide(ListLayer)),
++    )
+   })
+ })
+diff --git a/packages/effect-dynamodb/test/connected.test.ts b/packages/effect-dynamodb/test/connected.test.ts
+index 86c6e21..b934092 100644
+--- a/packages/effect-dynamodb/test/connected.test.ts
++++ b/packages/effect-dynamodb/test/connected.test.ts
+@@ -5130,3 +5130,237 @@ describeConnected("#71/#72 — pure aggregate edges + Pattern B date fields", ()
+       }).pipe(provideEdd),
+   )
+ })
++
++// ===========================================================================
++// Aggregate.list — cursor pagination, sharded lists, edge assembly
++// ===========================================================================
++//
++// list() assembles each page's aggregates concurrently (bounded) and, for
++// sharded list collections (`cardinality`), fans out to every shard and merges
++// the shard streams in ascending list-SK order behind an opaque per-shard
++// cursor. These tests exercise what mocks can't prove: real GSI key order,
++// real LastEvaluatedKey behavior, and full pagination walks with a limit that
++// truncates mid-shard — no aggregate skipped or duplicated, stable order.
++
++class GadgetNote extends Schema.Class<GadgetNote>("GadgetNote")({
++  id: Schema.String,
++  text: Schema.String,
++}) {}
++
++class Gadget extends Schema.Class<Gadget>("Gadget")({
++  id: Schema.String,
++  name: Schema.String,
++  notes: Schema.Array(GadgetNote),
++}) {}
++
++// Minimal registered entity — the table derives its primary index from it
++class GadgetOwner extends Schema.Class<GadgetOwner>("GadgetOwner")({
++  id: Schema.String,
++  name: Schema.String,
++}) {}
++
++const GadgetOwners = Entity.make({
++  model: GadgetOwner,
++  entityType: "GadgetOwner",
++  primaryKey: {
++    pk: { field: "pk", composite: ["id"] },
++    sk: { field: "sk", composite: [] },
++  },
++})
++
++const ListSchema = DynamoSchema.make({ name: "list-test", version: 1 })
++const listTableName = `agg-list-test-${Date.now()}`
++const ListTable = Table.make({ schema: ListSchema, entities: { GadgetOwners } })
++
++// Unsharded list collection
++const GadgetAggregate = Aggregate.make(Gadget, {
++  table: ListTable,
++  schema: ListSchema,
++  pk: { field: "pk", composite: ["id"] },
++  collection: { index: "lsiG", name: "gadget", sk: { field: "lsiGsk", composite: [] } },
++  list: {
++    index: "gsiList",
++    name: "gadgetlist",
++    pk: { field: "gsiListPk", composite: [] },
++    sk: { field: "gsiListSk", composite: ["name"] },
++  },
++  root: { entityType: "GadgetRoot" },
++  edges: {
++    notes: Aggregate.many("notes", { entityType: "GadgetNote" }),
++  },
++})
++
++// Sharded list collection — same domain model, write load spread over 3 shards
++const HotGadgetAggregate = Aggregate.make(Gadget, {
++  table: ListTable,
++  schema: ListSchema,
++  pk: { field: "pk", composite: ["id"] },
++  collection: { index: "lsiH", name: "hotgadget", sk: { field: "lsiHsk", composite: [] } },
++  list: {
++    index: "gsiHot",
++    name: "hotlist",
++    pk: { field: "gsiHotPk", composite: [] },
++    sk: { field: "gsiHotSk", composite: ["name"] },
++    cardinality: 3,
++  },
++  root: { entityType: "HotGadgetRoot" },
++  edges: {
++    notes: Aggregate.many("notes", { entityType: "HotGadgetNote" }),
++  },
++})
++
++const ListTestLayer = Layer.mergeAll(ClientLayer, ListTable.layer({ name: listTableName }))
++const provideList = Effect.provide(ListTestLayer)
++
++const gadgetIds = Array.from({ length: 12 }, (_, i) => `g-${String(i + 1).padStart(2, "0")}`)
++const gadgetNames = gadgetIds.map((id) => `name-${id}`)
++
++describeConnected("Aggregate.list integration tests", () => {
++  beforeAll(async () => {
++    await Effect.runPromise(
++      Effect.gen(function* () {
++        // The aggregate→table auto-merge wires both aggregates' collection
++        // (LSI) and list (GSI) indexes into the CreateTable call.
++        const db = yield* DynamoClient.make({
++          entities: { GadgetOwners },
++          aggregates: { GadgetAggregate, HotGadgetAggregate },
++          tables: { ListTable },
++        })
++        yield* db.tables.ListTable.create()
++      }).pipe(provideList, Effect.scoped),
++    )
++  }, 15000)
++
++  afterAll(async () => {
++    await Effect.runPromise(
++      Effect.gen(function* () {
++        const client = yield* DynamoClient
++        yield* client.deleteTable({ TableName: listTableName })
++      }).pipe(
++        provideList,
++        Effect.scoped,
++        Effect.catchTag("ResourceNotFoundError", () => Effect.void),
++      ),
++    )
++  }, 15000)
++
++  it.effect("seed 12 aggregates (with edges) into both list collections", () =>
++    Effect.gen(function* () {
++      for (const id of gadgetIds) {
++        const input = {
++          id,
++          name: `name-${id}`,
++          notes: [
++            { id: `${id}-n1`, text: `${id} first note` },
++            { id: `${id}-n2`, text: `${id} second note` },
++          ],
++        }
++        yield* GadgetAggregate.create(input)
++        yield* HotGadgetAggregate.create(input)
++      }
++
++      const one = yield* GadgetAggregate.get({ id: "g-01" })
++      expect(one.notes).toHaveLength(2)
++    }).pipe(provideList),
++  )
++
++  describe("unsharded list", () => {
++    it.effect("returns every aggregate fully assembled (edges included), cursor null", () =>
++      Effect.gen(function* () {
++        const result = yield* GadgetAggregate.list()
++
++        expect(result.cursor).toBeNull()
++        expect(result.data.map((g) => g.name)).toEqual(gadgetNames) // ascending list-SK order
++        for (const gadget of result.data) {
++          expect(gadget.notes.map((n) => n.text).sort()).toEqual([
++            `${gadget.id} first note`,
++            `${gadget.id} second note`,
++          ])
++        }
++      }).pipe(provideList),
++    )
++
++    it.effect("paginates to exhaustion: page size honored, no skips, no duplicates", () =>
++      Effect.gen(function* () {
++        const pages: Array<Array<string>> = []
++        let cursor: string | undefined
++        do {
++          const page = yield* GadgetAggregate.list(undefined, { limit: 5, cursor })
++          pages.push(page.data.map((g) => g.name))
++          cursor = page.cursor ?? undefined
++        } while (cursor !== undefined)
++
++        expect(pages.map((p) => p.length)).toEqual([5, 5, 2])
++        expect(pages.flat()).toEqual(gadgetNames)
++      }).pipe(provideList),
++    )
++  })
++
++  describe("sharded list (cardinality 3)", () => {
++    it.effect("returns every aggregate fully assembled (edges included), cursor null", () =>
++      Effect.gen(function* () {
++        const result = yield* HotGadgetAggregate.list()
++
++        expect(result.cursor).toBeNull()
++        // Deterministic merge order: ascending list-SK across all shards
++        expect(result.data.map((g) => g.name)).toEqual(gadgetNames)
++        for (const gadget of result.data) {
++          expect(gadget.notes.map((n) => n.text).sort()).toEqual([
++            `${gadget.id} first note`,
++            `${gadget.id} second note`,
++          ])
++        }
++      }).pipe(provideList),
++    )
++
++    it.effect("paginates to exhaustion with a limit that truncates mid-shard", () =>
++      Effect.gen(function* () {
++        // limit 5 over 3 hash-distributed shards: every page boundary cuts
++        // through at least one shard's fetched-but-not-emitted items, so this
++        // walk fails if per-shard resume keys are taken from the raw
++        // LastEvaluatedKey instead of the last emitted item.
++        const walk = Effect.gen(function* () {
++          const pages: Array<Array<string>> = []
++          let cursor: string | undefined
++          do {
++            const page = yield* HotGadgetAggregate.list(undefined, { limit: 5, cursor })
++            expect(page.data.length).toBeLessThanOrEqual(5)
++            pages.push(page.data.map((g) => g.id))
++            cursor = page.cursor ?? undefined
++          } while (cursor !== undefined)
++          return pages
++        })
++
++        const pages = yield* walk
++        const ids = pages.flat()
++
++        // Exact coverage: nothing skipped, nothing duplicated
++        expect(ids).toHaveLength(12)
++        expect(new Set(ids).size).toBe(12)
++        // Page size honored until exhaustion
++        expect(pages.map((p) => p.length)).toEqual([5, 5, 2])
++        // Deterministic order: globally ascending list-SK across the walk
++        expect(ids).toEqual(gadgetIds)
++        // Stable: a second walk returns the identical page sequence
++        const again = yield* walk
++        expect(again).toEqual(pages)
++      }).pipe(provideList),
++    )
++
++    it.effect("edges stay assembled on every page of a paginated walk", () =>
++      Effect.gen(function* () {
++        let cursor: string | undefined
++        do {
++          const page = yield* HotGadgetAggregate.list(undefined, { limit: 5, cursor })
++          for (const gadget of page.data) {
++            expect(gadget.notes.map((n) => n.text).sort()).toEqual([
++              `${gadget.id} first note`,
++              `${gadget.id} second note`,
++            ])
++          }
++          cursor = page.cursor ?? undefined
++        } while (cursor !== undefined)
++      }).pipe(provideList),
++    )
++  })
++})
+diff --git a/packages/language-service/CHANGELOG.md b/packages/language-service/CHANGELOG.md
+index d259819..e2b23bd 100644
+--- a/packages/language-service/CHANGELOG.md
++++ b/packages/language-service/CHANGELOG.md
+@@ -1,5 +1,7 @@
+ # @effect-dynamodb/language-service
+ 
++## 1.9.6
++
+ ## 1.9.5
+ 
+ ## 1.9.4
+diff --git a/packages/language-service/package.json b/packages/language-service/package.json
+index e1428c0..442c6a3 100644
+--- a/packages/language-service/package.json
++++ b/packages/language-service/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "@effect-dynamodb/language-service",
+-  "version": "1.9.5",
++  "version": "1.9.6",
+   "description": "TypeScript Language Service Plugin for effect-dynamodb — shows DynamoDB operations on hover",
+   "license": "MIT",
+   "author": "Justin Menga",
+diff --git a/packages/schema/CHANGELOG.md b/packages/schema/CHANGELOG.md
+index f1aeaec..f50a080 100644
+--- a/packages/schema/CHANGELOG.md
++++ b/packages/schema/CHANGELOG.md
+@@ -1,5 +1,7 @@
+ # @effect-dynamodb/schema
+ 
++## 1.9.6
++
+ ## 1.9.5
+ 
+ ## 1.9.4
+diff --git a/packages/schema/package.json b/packages/schema/package.json
+index 9c325c7..c40db6d 100644
+--- a/packages/schema/package.json
++++ b/packages/schema/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "@effect-dynamodb/schema",
+-  "version": "1.9.5",
++  "version": "1.9.6",
+   "description": "Pure Effect Schema-driven entity/aggregate modeling and relationship derivation for effect-dynamodb — importable without @aws-sdk",
+   "type": "module",
+   "license": "MIT",
