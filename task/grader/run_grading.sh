@@ -107,28 +107,13 @@ criterion_pagination_invariants() {
   run_hidden __hidden__pagination_invariants.connected.test.ts
 }
 
-# Fan-out must be bounded: behavioral in-flight counting plus a static scan
-# for agent-INTRODUCED `concurrency: "unbounded"` in library sources.
+# Fan-out must be bounded: measured behaviorally by counting in-flight queries.
+# A static scan for `concurrency: "unbounded"` used to run here too, but it
+# failed on the string rather than the behavior: a solution that bounds its own
+# fan-out around an unbounded combinator is correct and was being rejected.
 criterion_throughput_discipline() {
   ensure_setup
-  local rc=0
-  run_hidden __hidden__throughput_discipline.test.ts || rc=1
-  local re='concurrency:[[:space:]]*["'"'"']unbounded["'"'"']'
-  : >"$LOGDIR/unbounded-grep.log"
-  while IFS= read -r f; do
-    local rel=${f#"$PKG/src/"}
-    local agent_n base_n
-    agent_n=$(grep -cE "$re" "$f" 2>/dev/null || true)
-    base_n=0
-    [ -f "$G/pristine/src/$rel" ] && base_n=$(grep -cE "$re" "$G/pristine/src/$rel" 2>/dev/null || true)
-    if [ "${agent_n:-0}" -gt "${base_n:-0}" ]; then
-      echo "$rel: unbounded concurrency introduced (agent=$agent_n base=$base_n)" \
-        >>"$LOGDIR/unbounded-grep.log"
-      rc=1
-    fi
-  done < <(grep -RlE "$re" "$PKG/src" 2>/dev/null)
-  [ $rc -ne 0 ] && detail "unbounded-concurrency check" "$LOGDIR/unbounded-grep.log"
-  return $rc
+  run_hidden __hidden__throughput_discipline.test.ts
 }
 
 # Page assembly must not issue one query per item (queries counted per page).

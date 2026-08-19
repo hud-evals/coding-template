@@ -97,6 +97,13 @@ _ws = Workspace(
     shell_uid=AGENT_UID,
 )
 
+SDLC_TOOLS = os.environ.get("SDLC_TOOLS", "") not in ("", "0", "false")
+
+WORKSPACE_NOTE = (
+    f"Please make your changes directly in {REPO_DIR}, not in a copy or a "
+    "separate worktree."
+)
+
 _github = MockGitHub()
 _github_server: asyncio.Task[None] | None = None
 
@@ -112,8 +119,13 @@ async def _up() -> None:
     env.add_capability(_ws.capability("shell"))
     if _ws.tracks_files:
         env.add_capability(_ws.file_tracking_capability())
-    _github_server, github_capability = serve_github(_github)
-    env.add_capability(github_capability)
+    # The mock-GitHub tools belong to the SDLC flavor, which seeds issues and
+    # wants a pull request. A plain coding task never uses them, and offering
+    # them anyway spends agent steps on an empty issue list - every rollout so
+    # far called github_list_issues and github_list_pull_requests once.
+    if SDLC_TOOLS:
+        _github_server, github_capability = serve_github(_github)
+        env.add_capability(github_capability)
 
 
 @env.shutdown
@@ -210,7 +222,7 @@ async def coding_task(
         raise ValueError(f"unknown validate_mode: {validate_mode!r}")
     await _setup(base_ref)
     _ = yield (
-        f"You are working in a coding repository located at {REPO_DIR}.\n\n"
+        f"You are working in a coding repository located at {REPO_DIR}. {WORKSPACE_NOTE}\n\n"
         "Use the tools provided to complete the following task. Hidden tests grade your "
         f"work when you finish; do not modify existing tests.\n\n{description}"
     )

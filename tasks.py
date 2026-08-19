@@ -25,7 +25,7 @@ from pathlib import Path
 from hud.graders import BashGrader, EvaluationResult, LLMJudgeGrader, SubScore, combine
 
 from coding import repo as repo_lib
-from env import LOGS_DIR, REPO_DIR, VAULT_DIR, env, _setup
+from env import LOGS_DIR, REPO_DIR, VAULT_DIR, WORKSPACE_NOTE, env, _setup
 
 PROMPT = (Path(__file__).parent / "task" / "prompt.md").read_text()
 GRADER = "/hud/grader/run_grading.sh"
@@ -38,14 +38,13 @@ BLOCKER_CAP = 0.2
 # "judge": the LLM diff review; its criteria live in task/grader/judge.json.
 
 GRADERS = [
-    ("ordering_equivalence",   0.20, True,  "bash",   900),
+    ("ordering_equivalence",   0.25, True,  "bash",   900),
     ("pagination_invariants",  0.20, True,  "bash",   900),
     ("throughput_discipline",  0.10, True,  "bash",   900),
     ("n_plus_one",             0.10, False, "bash",   600),
     ("regression_backcompat",  0.15, True,  "bash",  1800),
     ("test_quality",           0.15, True,  "bash",  1800),
     ("conventions_gates",      0.05, False, "bash",   900),
-    ("maintainer_review",      0.05, False, "judge", None),
 ]
 
 # The judge's question/criteria live with the other graders, in a file named
@@ -228,8 +227,9 @@ async def fix_aggregate_listing(validate_mode: str | None = None):
         # Agent work is ignored; the baked gold.diff gets graded instead.
         _ = yield "Golden-validation run: no work is expected of you. Finish immediately."
     else:
-        # prompt.md opens with its own workspace preamble; no template prefix.
-        _ = yield PROMPT
+        # The contributor's ask is sent verbatim, after the environment's one
+        # line about where the repository is.
+        _ = yield f"{WORKSPACE_NOTE}\n\n{PROMPT}"
     yield await _grade(validate_mode)
 
 
