@@ -7,29 +7,21 @@ codebase over a sandboxed `ssh` workspace (git history vaulted), grading is diff
 ## Workflow
 
 ```bash
-uv sync
-hud deploy                                   # once; the image has Node 22/24, Go 1.25/1.26, Python, JRE, SQLite
-hud sync env                                 # once; links this dir to the platform env (writes .hud/config.json)
-
-mkdir tasks/<name>                           # add a task: see the folder layout below
-uv run tasks/pack.py <name>                  # -> tasks/<name>/dist/codebase.zip + grading.zip (local only)
-# upload 4 files as data files (console, or `uv run tasks/upload.py <name> --run`):
-#   dist/codebase.zip, dist/grading.zip, gold.diff, llm_rubric.json (if any)
-# put the returned ids into tasks/<name>/uploads.json (placeholders are there)
-hud sync tasks <taskset> tasks.py --yes      # tasks.py builds one Task row per folder from uploads.json
-hud eval tasks.py claude --task-ids <name> --runtime hud --yes
+hud deploy                                        # once
+hud sync tasks <taskset> tasks.py --yes           # per change
 ```
 
-Nothing is rebuilt or redeployed for a new task. Editing a grader means re-packing, re-uploading
-the one changed file, updating its id in `uploads.json`, and syncing again.
+To add or change a task: add or edit a folder under `tasks/` (layout below) and re-run the sync.
+Importing `tasks.py` packages every folder (the codebase at its sha, the grading pack), uploads
+whatever changed as data files with `HUD_API_KEY` (the key `hud deploy` uses), and emits one
+`Task` row per folder. Unchanged folders make no network call; the content-hash memo and the
+built zips live in the gitignored `tasks/.cache/`. Then `hud eval tasks.py claude --task-ids <name> --runtime hud --yes`.
 
 ## A task folder
 
 ```
 tasks/<name>/
   task.json          slug, description, codebase {repo_url, sha}   (packaging only; never a task arg)
-  uploads.json       the data-file ids of the four uploads (filled after uploading)
-  dist/              pack.py output (gitignored): codebase.zip, grading.zip
   prompt.md          the ticket the agent reads
   gold.diff          the reference solution; validate_mode="golden" grades it instead of agent work
   llm_rubric.json    optional: rows judged by the LLM
@@ -69,11 +61,10 @@ agent received it, dependencies installed), `GRADER_STATE_DIR`, `GRADING_LOGS_DI
 ## Layout
 
 - `env.py` — workspace, vault, the `swe-task` template (staging, setup, grading loop), the git-ref `coding-task` / `sdlc-task` flavors
-- `coding/uploads.py` — the row models and data-file download/unpack
+- `coding/uploads.py` — the row models, data-file download/unpack, and the package + upload side used by `tasks.py`
 - `coding/judge.py` — the tool-using LLM judge
 - `coding/repo.py` — vault, snapshot, diff, reset, apply
-- `tasks.py` — the Task rows `hud sync` / `hud eval` read (one per folder, ids from `uploads.json`)
-- `tasks/pack.py` — build a folder's two zips; `tasks/upload.py` — optional API upload that fills `uploads.json`
+- `tasks.py` — the Task rows `hud sync` / `hud eval` read; packages and uploads each folder at import
 - `tasks/<name>/` — the four tasks so far: `fix_aggregate_listing`, `exemplar_storage_contention`, `fastify_route_concurrency`, `dump_subset_schema_object_filter`
 
 ## Tests

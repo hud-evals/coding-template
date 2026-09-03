@@ -4,6 +4,5 @@
 *
 !Dockerfile.hud
 !env.py
-!tasks.py
 !coding
 **/__pycache__

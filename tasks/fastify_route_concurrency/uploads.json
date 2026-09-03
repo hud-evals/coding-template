@@ -1,5 +1,0 @@
-{
-  "codebase": "<FILL: file_id of dist/codebase.zip>",
-  "grading": "<FILL: file_id of dist/grading.zip>",
-  "golden_solution": "<FILL: file_id of gold.diff>"
-}

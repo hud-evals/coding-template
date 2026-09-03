@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -391,29 +392,18 @@ async def test_judge_outage_fails_closed(trees):
     assert score.value == 0.0 and "judge_error" in score.info
 
 
-# ─── tasks/pack.py and tasks.py ──────────────────────────────────────────
-
-
-def _load(name: str):
-    import importlib.util
-
-    path = Path(__file__).resolve().parents[1] / "tasks" / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+# ─── publishing: tasks.py packages and uploads at import ─────────────────
 
 
 def test_zip_tree_is_deterministic_and_keeps_modes(tmp_path):
-    pack = _load("pack")
     src = tmp_path / "src"
     (src / ".git").mkdir(parents=True)
     (src / ".git" / "HEAD").write_text("ref")
     (src / "run.sh").write_text("#!/bin/sh\n")
     (src / "run.sh").chmod(0o755)
     (src / "a.txt").write_text("a")
-    one, two = pack.zip_tree(src, tmp_path / "one.zip"), pack.zip_tree(src, tmp_path / "two.zip")
-    assert pack.sha256(one) == pack.sha256(two)
+    one, two = uploads.zip_tree(src, tmp_path / "one.zip"), uploads.zip_tree(src, tmp_path / "two.zip")
+    assert uploads.sha256(one) == uploads.sha256(two)
     with zipfile.ZipFile(one) as zf:
         assert sorted(zf.namelist()) == ["a.txt", "run.sh"]
         assert (zf.getinfo("run.sh").external_attr >> 16) & 0o777 == 0o755
@@ -422,28 +412,99 @@ def test_zip_tree_is_deterministic_and_keeps_modes(tmp_path):
     assert os.access(out / "run.sh", os.X_OK)
 
 
-def test_task_rows_follow_the_swe_task_schema_and_skip_placeholders(tmp_path):
-    import tasks as rows_module
+def _demo_task(tmp_path: Path, *, rubric: bool = True) -> Path:
+    """A task folder whose codebase is a tiny local git repo (fetch works from a path)."""
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "answer.py").write_text("def answer():\n    return 41\n")
+    for argv in (
+        ["git", "init", "-q", "-b", "main", "."],
+        ["git", "add", "-A"],
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"],
+    ):
+        subprocess.run(argv, cwd=source, check=True)
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=source, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    folder = tmp_path / "tasks" / "demo"
+    (folder / "grading").mkdir(parents=True)
+    (folder / "prompt.md").write_text("Fix it.")
+    (folder / "gold.diff").write_text("diff --git a/x b/x\n")
+    (folder / "task.json").write_text(json.dumps({"slug": "demo", "codebase": {"repo_url": str(source), "sha": sha}}))
+    (folder / "grading" / "run_grading.sh").write_text("#!/bin/sh\n")
+    (folder / "grading" / "criteria.json").write_text("[]")
+    if rubric:
+        (folder / "llm_rubric.json").write_text("[]")
+    return folder
 
-    task = tmp_path / "demo"
-    task.mkdir()
-    (task / "prompt.md").write_text("Fix it.")
-    (task / "task.json").write_text(
-        json.dumps({"slug": "demo", "codebase": {"repo_url": "https://example.invalid/r", "sha": "abc"}})
+
+def test_publish_uploads_once_then_serves_from_the_hash_cache(tmp_path, monkeypatch):
+    folder = _demo_task(tmp_path)
+    sent: list[str] = []
+    monkeypatch.setattr(uploads, "upload_file", lambda path, **kw: (sent.append(path.name), f"id-{path.name}")[1])
+    cache = tmp_path / "cache"
+    ids, cached = uploads.publish(folder, cache_dir=cache, api_key="sk-test", api_url="https://api.example")
+    assert not cached and sorted(sent) == ["codebase.zip", "gold.diff", "grading.zip", "llm_rubric.json"]
+    assert ids == {
+        "codebase": "id-codebase.zip",
+        "grading": "id-grading.zip",
+        "golden_solution": "id-gold.diff",
+        "llm_rubric": "id-llm_rubric.json",
+    }
+    with zipfile.ZipFile(cache / "demo" / "codebase.zip") as zf:
+        assert zf.namelist() == ["answer.py"]  # .git stripped
+
+    # Second run: nothing changed, no upload, no key needed.
+    monkeypatch.setattr(uploads, "upload_file", lambda *a, **kw: pytest.fail("uploaded despite cache hit"))
+    again, cached = uploads.publish(folder, cache_dir=cache, api_key=None, api_url="https://api.example")
+    assert cached and again == ids
+
+    # One edited grader: exactly one upload, and a clear error when the key is missing.
+    (folder / "grading" / "run_grading.sh").write_text("#!/bin/sh\necho changed\n")
+    with pytest.raises(uploads.UploadError, match="demo: grading.zip needs uploading but HUD_API_KEY"):
+        uploads.publish(folder, cache_dir=cache, api_key=None, api_url="https://api.example")
+    sent.clear()
+    monkeypatch.setattr(uploads, "upload_file", lambda path, **kw: (sent.append(path.name), "id-new")[1])
+    changed, cached = uploads.publish(folder, cache_dir=cache, api_key="sk-test", api_url="https://api.example")
+    assert (
+        not cached
+        and sent == ["grading.zip"]
+        and changed["grading"] == "id-new"
+        and changed["codebase"] == ids["codebase"]
     )
-    assert rows_module.task_for(task) is None  # no uploads.json yet
-    (task / "uploads.json").write_text(json.dumps({"codebase": "<FILL>", "grading": "g1", "golden_solution": "s1"}))
-    assert rows_module.task_for(task) is None  # a placeholder left
-    (task / "uploads.json").write_text(
-        json.dumps({"codebase": {"file_id": "c1", "sha256": "x"}, "grading": "g1", "golden_solution": "s1"})
-    )
-    row = rows_module.task_for(task)
+
+
+def test_publish_names_the_task_and_file_when_an_upload_fails(tmp_path, monkeypatch):
+    folder = _demo_task(tmp_path, rubric=False)
+
+    def boom(path, **kw):
+        raise RuntimeError("503")
+
+    monkeypatch.setattr(uploads, "upload_file", boom)
+    with pytest.raises(uploads.UploadError, match="demo: uploading codebase.zip failed: 503"):
+        uploads.publish(folder, cache_dir=tmp_path / "cache", api_key="sk-test", api_url="https://api.example")
+
+
+def test_tasks_module_emits_one_row_per_folder_in_the_template_shape(tmp_path, monkeypatch, capsys):
+    import importlib.util
+
+    folder = _demo_task(tmp_path)
+    monkeypatch.setenv("SWE_TASKS_DIR", str(folder.parent))
+    monkeypatch.setattr(uploads, "upload_file", lambda path, **kw: f"id-{path.name}")
+    monkeypatch.setattr("hud.settings.settings.api_key", "sk-test")
+    spec = importlib.util.spec_from_file_location("tasks_under_test", Path(__file__).resolve().parents[1] / "tasks.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    (row,) = module.tasks
     assert row.env == "swe-task-example" and row.id == "swe-task" and row.slug == "demo"
     assert row.args == {
         "prompt": "Fix it.",
-        "codebase": [{"file_id": "c1"}],
-        "grading": [{"file_id": "g1"}],
-        "golden_solution": [{"file_id": "s1"}],
+        "codebase": [{"file_id": "id-codebase.zip"}],
+        "grading": [{"file_id": "id-grading.zip"}],
+        "golden_solution": [{"file_id": "id-gold.diff"}],
+        "llm_rubric": [{"file_id": "id-llm_rubric.json"}],
     }
-    # The four checked-in folders: rows only once their uploads.json is filled in.
-    assert all(t.id == "swe-task" for t in rows_module.tasks)
+    assert (
+        capsys.readouterr().out.strip()
+        == "demo: codebase=id-codebase.zip grading=id-grading.zip gold=id-gold.diff rubric=id-llm_rubric.json (uploaded)"
+    )

@@ -31,5 +31,5 @@ instances/*
 # Logs
 *.log
 
-# tasks/pack.py output: the zips a task folder uploads
-tasks/*/dist/
+# tasks.py: fetched codebases, built zips, content-hash -> data-file id memo
+tasks/.cache/

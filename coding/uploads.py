@@ -10,9 +10,11 @@ criterion. Same row shape in both, so a contributor learns one format.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
+import subprocess
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -225,3 +227,120 @@ async def stage(ref: DataFileRef, root: Path, *, api_key: str | None = None, unp
         expand_zip(dest, root)
         return root
     return dest
+
+
+# ─── operator side: package a task folder and upload it ──────────────────
+# Used by tasks.py at import, so `hud sync tasks <taskset> tasks.py` is the
+# whole publishing step. The console's data-file page uses the same route:
+# POST /v2/data (a presigned PUT url) -> PUT the bytes -> POST .../complete.
+
+UPLOAD_ARGS = ("codebase", "grading", "golden_solution", "llm_rubric")
+_ZIP_TIME = (2000, 1, 1, 0, 0, 0)  # fixed, so unchanged content zips to the same bytes
+
+
+class UploadError(RuntimeError):
+    """A task folder could not be published; names the task and the file."""
+
+
+def zip_tree(source: Path, out: Path, *, skip: tuple[str, ...] = (".git", "__pycache__")) -> Path:
+    """A deterministic zip of ``source`` keeping file modes and in-tree symlinks."""
+    entries = sorted(p for p in source.rglob("*") if not any(part in skip for part in p.relative_to(source).parts))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path in entries:
+            info = zipfile.ZipInfo(path.relative_to(source).as_posix(), date_time=_ZIP_TIME)
+            mode = path.lstat().st_mode
+            if stat.S_ISLNK(mode):
+                info.external_attr = (stat.S_IFLNK | 0o777) << 16
+                zf.writestr(info, os.readlink(path))
+            elif stat.S_ISREG(mode):
+                info.external_attr = (stat.S_IFREG | (mode & 0o7777)) << 16
+                info.compress_type = zipfile.ZIP_DEFLATED
+                zf.writestr(info, path.read_bytes())
+    return out
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def fetch_codebase(repo_url: str, sha: str, cache_dir: Path) -> Path:
+    """The repository at ``sha``, fetched once (shallow, that one commit)."""
+    dest = cache_dir / sha
+    if (dest / ".git").is_dir():
+        return dest
+    dest.mkdir(parents=True, exist_ok=True)
+    for argv in (
+        ["git", "init", "-q", str(dest)],
+        ["git", "-C", str(dest), "remote", "add", "origin", repo_url],
+        ["git", "-C", str(dest), "fetch", "-q", "--depth", "1", "origin", sha],
+        ["git", "-C", str(dest), "checkout", "-q", "FETCH_HEAD"],
+    ):
+        subprocess.run(argv, check=True)
+    return dest
+
+
+def upload_file(path: Path, *, api_key: str, api_url: str) -> str:
+    """Create -> PUT -> complete; returns the data file id."""
+    headers = {"Authorization": f"Bearer {api_key}"}
+    body = {
+        "filename": path.name,
+        "size_bytes": path.stat().st_size,
+        "content_type": "application/octet-stream",
+        "scope": "team",
+    }
+    with httpx.Client(timeout=httpx.Timeout(60.0, write=1800.0)) as client:
+        created = client.post(f"{api_url}/v2/data", headers=headers, json=body)
+        created.raise_for_status()
+        file_id, url = created.json()["file"]["id"], created.json()["upload_url"]
+        with path.open("rb") as handle:
+            client.put(url, content=handle, headers={"Content-Type": "application/octet-stream"}).raise_for_status()
+        client.post(f"{api_url}/v2/data/{file_id}/complete", headers=headers).raise_for_status()
+    return file_id
+
+
+def publish(folder: Path, *, cache_dir: Path, api_key: str | None, api_url: str) -> tuple[dict[str, str], bool]:
+    """Package ``tasks/<name>/`` and make sure its files are uploaded.
+
+    Returns ``({arg: file_id}, all_cached)``. Every artifact is keyed by
+    content hash in ``cache_dir/uploads-cache.json``; an unchanged folder makes
+    no network call and needs no key.
+    """
+    meta = json.loads((folder / "task.json").read_text("utf-8"))
+    for required in ("prompt.md", "gold.diff", "grading/run_grading.sh", "grading/criteria.json"):
+        if not (folder / required).is_file():
+            raise UploadError(f"{folder.name}: {required} is missing")
+    codebase = meta["codebase"]
+    artifacts = {
+        "codebase": zip_tree(
+            fetch_codebase(codebase["repo_url"], codebase["sha"], cache_dir / "codebases"),
+            cache_dir / folder.name / "codebase.zip",
+        ),
+        "grading": zip_tree(folder / "grading", cache_dir / folder.name / "grading.zip"),
+        "golden_solution": folder / "gold.diff",
+    }
+    if (folder / "llm_rubric.json").is_file():
+        artifacts["llm_rubric"] = folder / "llm_rubric.json"
+
+    cache_file = cache_dir / "uploads-cache.json"
+    cache: dict[str, str] = json.loads(cache_file.read_text("utf-8")) if cache_file.is_file() else {}
+    ids: dict[str, str] = {}
+    all_cached = True
+    for arg, path in artifacts.items():
+        digest = sha256(path)
+        if digest not in cache:
+            all_cached = False
+            if not api_key:
+                raise UploadError(f"{folder.name}: {path.name} needs uploading but HUD_API_KEY is not set")
+            try:
+                cache[digest] = upload_file(path, api_key=api_key, api_url=api_url)
+            except Exception as exc:
+                raise UploadError(f"{folder.name}: uploading {path.name} failed: {exc}") from exc
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            cache_file.write_text(json.dumps(cache, indent=1, sort_keys=True), "utf-8")
+        ids[arg] = cache[digest]
+    return ids, all_cached
