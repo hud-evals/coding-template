@@ -1,0 +1,122 @@
+[
+ {
+  "id": "core_concurrency",
+  "requirement": "Invalid concurrency options throw FST_ERR_ROUTE_CONCURRENCY_OPTION_INVALID; admitted work is capped at the limit and slots are released after normal responses, handler errors, custom error handlers, onError hooks and keep-alive reuse",
+  "weight": 0.15,
+  "blocker": true,
+  "timeout": 300
+ },
+ {
+  "id": "fifo_queue_and_overload",
+  "requirement": "Queued requests enter the route lifecycle in strict FIFO order; queueLimit 0 rejects immediately; a full queue answers 503 FST_ERR_ROUTE_CONCURRENCY_QUEUE_FULL and an expired wait 503 FST_ERR_ROUTE_CONCURRENCY_QUEUE_TIMEOUT, neither entering hooks or handler",
+  "weight": 0.15,
+  "blocker": true,
+  "timeout": 300
+ },
+ {
+  "id": "stream_and_disconnect",
+  "requirement": "A streamed body holds its slot until the stream completes; reply.hijack and client aborts mid-stream release the slot for the next queued request",
+  "weight": 0.2,
+  "blocker": false,
+  "timeout": 300
+ },
+ {
+  "id": "plugin_inheritance_and_isolation",
+  "requirement": "Plugin-level concurrency applies to the plugin's routes, route-level overrides it, nested encapsulation inherits unless re-configured, siblings and HTTP methods stay isolated, request.routeOptions.concurrency is the normalised object",
+  "weight": 0.15,
+  "blocker": false,
+  "timeout": 300
+ },
+ {
+  "id": "lifecycle_edges",
+  "requirement": "Random mid-flight aborts return active slots to zero; preValidation and content-type parser failures release the slot; handlerTimeout starts at admission, not while queued",
+  "weight": 0.1,
+  "blocker": false,
+  "timeout": 300
+ },
+ {
+  "id": "types_declarations",
+  "requirement": "The TypeScript declarations expose the new route options and error codes (hidden tstyche test on the public surface)",
+  "weight": 0.1,
+  "blocker": false,
+  "timeout": 400
+ },
+ {
+  "id": "docs_reference",
+  "requirement": "docs/Reference/ documents the new option and its error codes (concurrency, queueLimit, queueTimeout, FST_ERR_ROUTE_CONCURRENCY_*)",
+  "weight": 0.05,
+  "blocker": false,
+  "timeout": 120
+ },
+ {
+  "id": "scope_discipline",
+  "requirement": "Every changed path is under lib/, types/, test/, docs/Reference/, fastify.js or fastify.d.ts (unweighted diagnostic)",
+  "weight": 0.0,
+  "blocker": false,
+  "timeout": 120
+ },
+ {
+  "id": "test_quality",
+  "requirement": "The agent's own tests under test/ pass on its tree and fail on the baseline",
+  "weight": 0.1,
+  "blocker": false,
+  "timeout": 600
+ },
+ {
+  "id": "regression_existing",
+  "requirement": "43 existing test files near the change still pass, run from the baseline's own copies",
+  "gate": true,
+  "timeout": 900,
+  "pristine_paths": [
+   "test/route.1.test.js",
+   "test/route.2.test.js",
+   "test/route.3.test.js",
+   "test/route.4.test.js",
+   "test/route.5.test.js",
+   "test/route.6.test.js",
+   "test/route.7.test.js",
+   "test/route.8.test.js",
+   "test/route-hooks.test.js",
+   "test/route-prefix.test.js",
+   "test/route-shorthand.test.js",
+   "test/hooks.test.js",
+   "test/hooks-async.test.js",
+   "test/handler-timeout.test.js",
+   "test/handler-context.test.js",
+   "test/context-config.test.js",
+   "test/plugin.1.test.js",
+   "test/plugin.2.test.js",
+   "test/plugin.3.test.js",
+   "test/plugin.4.test.js",
+   "test/register.test.js",
+   "test/stream.1.test.js",
+   "test/stream.2.test.js",
+   "test/stream.3.test.js",
+   "test/stream.4.test.js",
+   "test/stream.5.test.js",
+   "test/request-error.test.js",
+   "test/request-timeout.test.js",
+   "test/reply-error.test.js",
+   "test/set-error-handler.test.js",
+   "test/encapsulated-error-handler.test.js",
+   "test/404s.test.js",
+   "test/500s.test.js",
+   "test/async-await.test.js",
+   "test/inject.test.js",
+   "test/close.test.js",
+   "test/internals/context.test.js",
+   "test/internals/handle-request.test.js",
+   "test/internals/hooks.test.js",
+   "test/internals/plugin.test.js",
+   "test/internals/request.test.js",
+   "test/internals/reply.test.js",
+   "test/internals/hook-runner.test.js"
+  ]
+ },
+ {
+  "id": "anti_hack_gate",
+  "requirement": "No baseline test deleted or weakened, no skips added, no runner/toolchain config (package.json, lockfile, .borp.yaml, tsconfig, .github, build) changed",
+  "gate": true,
+  "timeout": 120
+ }
+]

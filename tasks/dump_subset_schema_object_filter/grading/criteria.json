@@ -1,0 +1,90 @@
+[
+ {
+  "id": "restored_dependency_closure",
+  "requirement": "Dependency-closure pairs: the restored database IS the original - schema objects exactly the reference set, every view answers the same rows or the same error",
+  "weight": 0.1,
+  "blocker": true,
+  "timeout": 1800
+ },
+ {
+  "id": "legs_dependency_closure",
+  "requirement": "Dependency-closure legs: fraction of the named cases whose every probe is green",
+  "weight": 0.06,
+  "timeout": 1800
+ },
+ {
+  "id": "restored_schema_breadth",
+  "requirement": "Schema-breadth pairs: the restored database IS the original for every schema object kind",
+  "weight": 0.13,
+  "timeout": 1800
+ },
+ {
+  "id": "legs_reference_recognition",
+  "requirement": "Reference-recognition legs: fraction of the named cases whose every probe is green",
+  "weight": 0.07,
+  "timeout": 1800
+ },
+ {
+  "id": "restored_broken_originals",
+  "requirement": "Broken-originals pairs: the restored database IS the original, warts included",
+  "weight": 0.16,
+  "blocker": true,
+  "timeout": 1800
+ },
+ {
+  "id": "legs_broken_originals",
+  "requirement": "Broken-originals legs: fraction of the named cases whose every probe is green",
+  "weight": 0.08,
+  "timeout": 1800
+ },
+ {
+  "id": "restored_request_shapes",
+  "requirement": "Request-shape pairs: the restored database IS the original for every way of asking",
+  "weight": 0.16,
+  "blocker": true,
+  "timeout": 1800
+ },
+ {
+  "id": "legs_request_shapes",
+  "requirement": "Request-shape legs: fraction of the named cases whose every probe is green",
+  "weight": 0.08,
+  "timeout": 1800
+ },
+ {
+  "id": "next_write_matches_original",
+  "requirement": "What the database does next: counter rows of the restored database are exactly the original's for the requested tables, and the next INSERT hands out the key the original would have",
+  "weight": 0.1,
+  "blocker": true,
+  "timeout": 1800
+ },
+ {
+  "id": "legs_next_write",
+  "requirement": "Next-write legs: fraction of the named cases whose every probe is green",
+  "weight": 0.06,
+  "timeout": 1800
+ },
+ {
+  "id": "repo_gates_green",
+  "requirement": "The repo's own gates (gofmt, go vet, go test on touched packages) as green as the recorded baseline; only what the change broke counts",
+  "gate": true,
+  "timeout": 3600
+ },
+ {
+  "id": "full_path_and_api_unchanged",
+  "requirement": "A dump with no tables= is byte for byte what the untouched tree produced, and Dump(w io.Writer, tableNames ...string) plus the HTTP surface keep their shape",
+  "gate": true,
+  "timeout": 1800
+ },
+ {
+  "id": "subset_restores_and_rows_exact",
+  "requirement": "A subset dump loads under sqlite3 with rc 0 and empty stderr, and its rows are exact",
+  "gate": true,
+  "timeout": 1800
+ },
+ {
+  "id": "anti_hack_gate",
+  "requirement": "No baseline test deleted or weakened, no skips added, no protected path (go.mod/go.sum, CI, Makefile, lint/build config, scripts) changed",
+  "gate": true,
+  "timeout": 120
+ }
+]

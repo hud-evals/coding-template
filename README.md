@@ -1,94 +1,85 @@
 # Coding Environment (HUD v6)
 
-A coding environment: the agent gets a git repo over a sandboxed **`ssh` workspace** (the
-harness brings its own bash/file tools), and grading is diff-based — capture the agent's
-changes, reset to the pre-agent snapshot, re-apply the diff, bring in the hidden tests, run
-them. Generic tasks, SDLC workflow tasks, and SWE-bench Pro are flavors on this core.
+One environment, deployed once. Every task is a folder of uploads: the agent gets the
+codebase over a sandboxed `ssh` workspace (git history vaulted), grading is diff-based
+(capture the agent's diff, reset, re-apply, run hidden graders the agent never saw).
 
-The agent never sees the answer key. Task setup moves the repo's real `.git` — which may hold
-solution branches or the fix commit — into a vault outside the workspace and leaves a fresh
-single-commit repo: git works normally, but there is no history, no refs, and no remotes.
-Grading discards the agent's `.git`, restores the vault, and checks hidden tests out *after*
-the agent's diff. In images, the vault and instance assets live under `/hud` (root, mode 700)
-and agent shells drop to a non-root uid via `setpriv`.
-
-## Layout
-
-- `env.py` — the environment: workspace wiring plus the three task templates.
-- `coding/repo.py` — the shared repo lifecycle: vault, snapshot, diff capture, reset, apply.
-- `coding/github.py` — mock GitHub for SDLC tasks: issue/PR store served as `github_*` tools.
-- `coding/swe_bench_pro.py` — the SWE-bench Pro grading pipeline.
-- `tasks.py` — sample generic and SDLC tasks.
-- `swe_tasks.py` — the SWE-bench Pro task source: fetches instances and builds their images
-  when run; task rows when imported.
-- `Dockerfile.hud` — the image definition for both flavors: `BASE` selects the generic
-  repo-clone head or a prebuilt instance image.
-
-## Generic tasks (`coding-task`)
-
-Point the env at a repo (`REPO_URL`; locally it clones per process, or bake it with
-`Dockerfile.hud`) and parameterize the template: a `base_ref` to start from, a `test_ref` whose
-`test_files` are the hidden tests (checked out from the vaulted history at grade time), and a
-`test_command` scored by exit code. Tasks follow the 3-branch convention — `{task}_baseline` /
-`{task}_test` / `{task}_golden`; `tasks.py` ships four sample bugs on
-[coding-template-sample](https://github.com/hud-evals/coding-template-sample):
+## Workflow
 
 ```bash
 uv sync
-hud set HUD_API_KEY=your-key-here
-hud eval tasks.py claude --task-ids sentry-fix -y --runtime local
+hud deploy                                   # once; the image has Node 22/24, Go 1.25/1.26, Python, JRE, SQLite
+hud sync env                                 # once; links this dir to the platform env (writes .hud/config.json)
+
+mkdir tasks/<name>                           # add a task: see the folder layout below
+uv run tasks/pack.py <name>                  # -> tasks/<name>/dist/codebase.zip + grading.zip (local only)
+# upload 4 files as data files (console, or `uv run tasks/upload.py <name> --run`):
+#   dist/codebase.zip, dist/grading.zip, gold.diff, llm_rubric.json (if any)
+# put the returned ids into tasks/<name>/uploads.json (placeholders are there)
+hud sync tasks <taskset> tasks.py --yes      # tasks.py builds one Task row per folder from uploads.json
+hud eval tasks.py claude --task-ids <name> --runtime hud --yes
 ```
 
-## SDLC tasks (`sdlc-task`)
+Nothing is rebuilt or redeployed for a new task. Editing a grader means re-packing, re-uploading
+the one changed file, updating its id in `uploads.json`, and syncing again.
 
-The generic flavor plus workflow: the repo gets an `origin` remote (a bare mock-GitHub repo the
-agent pushes to) and `github_*` MCP tools seeded with the task's issues. The deliverable is a
-pushed branch with a pull request — grading checks the PR head out of the remote, brings in the
-hidden tests, runs the test command (weight 0.8), and scores the PR itself (0.2): a structural
-title/body check by default, or `pr_rubric` judged by `LLMJudgeGrader` when provided. See the
-`sentry-fix-pr` sample in `tasks.py`:
+## A task folder
 
-```bash
-hud eval tasks.py claude --task-ids sentry-fix-pr -y --runtime local
+```
+tasks/<name>/
+  task.json          slug, description, codebase {repo_url, sha}   (packaging only; never a task arg)
+  uploads.json       the data-file ids of the four uploads (filled after uploading)
+  dist/              pack.py output (gitignored): codebase.zip, grading.zip
+  prompt.md          the ticket the agent reads
+  gold.diff          the reference solution; validate_mode="golden" grades it instead of agent work
+  llm_rubric.json    optional: rows judged by the LLM
+  grading/           zipped as is -> the grading pack, staged at /hud/grader
+    run_grading.sh   ONE bash function per criterion, named exactly as its id; shared setup on top, dispatcher at the bottom
+    criteria.json    the rows: id, requirement, weight, blocker / gate, timeout, pristine_paths
+    tests/ ...       hidden tests and helpers the functions run
+    setup.sh         optional: toolchain + dependency install (root, before the agent); else lockfile auto-detection
+    services.sh      optional: start daemons the tests need (DynamoDB Local ...), return once they answer
 ```
 
-## SWE-bench Pro tasks
+`criteria.json` and `llm_rubric.json` share one row shape: `{"id", "requirement", "weight", ...}`.
+A `criteria.json` row is one deterministic grader: `bash run_grading.sh <id>` in the repo,
+exit 0 passes, an optional trailing `GRADER_SCORE 0.5` line makes it fractional; hidden tests
+are the normal content. `gate: true` rows carry no weight; failing one caps the reward at a
+fifth. `blocker: true` rows scale the reward to a third when they fail. `pristine_paths` are
+checked out from the baseline before the row runs (the repo's own tests cannot be edited
+into passing). Rows run gates first, then in table order; put a tree-mutating row last.
 
-Each of the 731 public [SWE-bench Pro](https://github.com/scaleapi/SWE-bench_Pro-os) instances
-ships a prebuilt image (`jefzda/sweap-images:<tag>`, `linux/amd64`) with the repo and toolchain
-baked in. Running `swe_tasks.py` fetches the dataset row plus the official
-`run_script.sh`/`parser.py` into `instances/<id>/` and builds `Dockerfile.hud` with the
-instance's image as `BASE`, so the image serves this env from inside. Grading replays the
-official evaluator: resolved iff every `fail_to_pass` **and** `pass_to_pass` test passes.
+An `llm_rubric.json` row is one LLM-judged criterion, judged on its own against the agent's
+change: the judge sees a diff summary (files with +/- counts; small hand-written hunks
+inlined) and reads the rest with read-only tools over a snapshot of the final tree and the
+pre-change tree, up to 15 calls, then must answer. `negative: true` rows describe a mistake
+and are penalties: the judge must quote the offending code or the row does not fire.
+`tools: false` falls back to a one-shot judge over the summary. `guidance` is extra
+reviewer context; `partial: true` allows a 0..1 score.
 
-```bash
-uv run swe_tasks.py instance_NodeBB__NodeBB-04998908ba6721d64eba79ae3b65a351dcfbc5b5-vnan
-hud eval swe_tasks.py claude --task-ids nodebb-04998908
-uv run swe_tasks.py <id>... --push registry.io/acme   # push for cloud runtimes
-```
+Every row is one `SubScore` on the platform: `name` = id, `weight` = the row's weight,
+`info.statement` = the requirement text, plus the verdict detail (exit code and output
+tail, or the judge's reason, evidence, tools used and files read).
+
+The scripts see `REPO_DIR`, `GRADER_DIR` (the pack; `$GRADER_DIR/base` is the repo as the
+agent received it, dependencies installed), `GRADER_STATE_DIR`, `GRADING_LOGS_DIR`,
+`AGENT_DIFF` (the applied patch), `BASE_SHA`, `SETUP_COMMIT`. `use-node 22|24` and
+`use-go 1.25|1.26` pick a toolchain in `setup.sh`.
+
+## Layout
+
+- `env.py` — workspace, vault, the `swe-task` template (staging, setup, grading loop), the git-ref `coding-task` / `sdlc-task` flavors
+- `coding/uploads.py` — the row models and data-file download/unpack
+- `coding/judge.py` — the tool-using LLM judge
+- `coding/repo.py` — vault, snapshot, diff, reset, apply
+- `tasks.py` — the Task rows `hud sync` / `hud eval` read (one per folder, ids from `uploads.json`)
+- `tasks/pack.py` — build a folder's two zips; `tasks/upload.py` — optional API upload that fills `uploads.json`
+- `tasks/<name>/` — the four tasks so far: `fix_aggregate_listing`, `exemplar_storage_contention`, `fastify_route_concurrency`, `dump_subset_schema_object_filter`
 
 ## Tests
 
 ```bash
-uv run pytest tests/ -q --ignore=tests/test_integration.py   # offline + hermetic local e2e
-uv run pytest tests/test_integration.py -v                   # SWE-bench gold-patch check (Docker)
+uv run pytest tests/ -q --ignore=tests/test_integration.py
 ```
-
-`test_local_rollout.py` runs the generic and SDLC flavors end to end against a fixture 3-branch
-repo (no Docker or network): the golden ref grades 1.0 and the untouched baseline 0.0. The
-integration suite is the same check for built SWE-bench Pro instances.
-
-## Caveats
-
-- Public benchmarks are public: a networked agent could fetch solutions from GitHub. Disable
-  network egress at the runtime layer if that matters for your run.
-- The uid wall needs `setpriv` (util-linux) in the image; the repo path comes from `REPO_DIR`
-  (`/app` in instance images).
-- The agent runs as uid 1000, so the baked repo must belong to it. The workspace only chowns
-  its own directory at start (O(1), keeps boot fast); the tree is owned where it's staged —
-  the generic build chowns `/app` in the clone step, and task setup re-chowns after root
-  mutates the worktree (checkout, vaulting).
-
-## Documentation
 
 See the [full docs](https://docs.hud.ai) for tasks, evaluation, and scaling.

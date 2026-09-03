@@ -1,0 +1,5 @@
+{
+  "slug": "exemplar_storage_contention",
+  "description": "Prometheus: exemplar storage serialises appends behind a storage-wide lock",
+  "codebase": {"repo_url": "https://github.com/prometheus/prometheus", "sha": "b2b7990baa016e641474f14fd78929489f23c9b2"}
+}

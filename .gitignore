@@ -30,3 +30,6 @@ instances/*
 
 # Logs
 *.log
+
+# tasks/pack.py output: the zips a task folder uploads
+tasks/*/dist/

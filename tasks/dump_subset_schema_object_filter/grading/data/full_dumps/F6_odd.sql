@@ -1,0 +1,11 @@
+PRAGMA foreign_keys=OFF;
+BEGIN TRANSACTION;
+CREATE TABLE audit (id INTEGER PRIMARY KEY, msg TEXT);
+DELETE FROM "sqlite_sequence";;
+INSERT INTO "sqlite_sequence" VALUES('users',1);
+CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);
+INSERT INTO "users" VALUES(1,'alice');
+CREATE VIEW user_names AS SELECT name FROM users;
+CREATE TRIGGER on_view INSTEAD OF INSERT ON user_names BEGIN INSERT INTO users(name) VALUES(NEW.name); END;
+CREATE INDEX idx_audit_msg ON audit(msg);
+COMMIT;

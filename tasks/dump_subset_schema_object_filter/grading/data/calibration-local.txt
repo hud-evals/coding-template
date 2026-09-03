@@ -1,0 +1,186 @@
+# Local calibration (no Docker) under V3, 2026-09-02 UTC -- the run below is the
+# grader in THIS tree, executed over sixteen trees.  Docker was not used: the
+# same local path validated by the forensic regrade, whose reconstructed run
+# trees reproduced the platform's own subscores (job 1e5404aa) to six decimals.
+#
+# Scoreboard V3 (reweight-v3/DESIGN-V3.md), applied to tasks.py:
+#   c4 restored_matches_original   0.55 -> 0.60, still a blocker, and scored as
+#      a VERDICT (dropped from FRACTIONAL): its check still prints GRADER_SCORE,
+#      but as a diagnostic -- the ticket's contract is one binary sentence.
+#   c5 behaviour_legs_coverage     0.45 -> 0.40, still not a blocker, 17 -> 20
+#      legs (L18-L20: the absent direction of L14-L17).
+# Blockers hold 0.60 of the weight -- at the 0.60 ceiling, not over it;
+# BLOCKER_CAP 0.60, flat.  calibrate.py reads all of this out of tasks.py --
+# the one place it is written down -- and checks both programme rules before it
+# runs a tree.  The ticket (task/prompt.md), the fixtures and their sha256s,
+# the criterion-4 pairs and reference sets are untouched; L18-L20 introduce no
+# object name and no pair the corpus did not already compare.
+#
+# python3 tools/calibrate.py --base ../repo-base \
+#     gold=../repo base=../repo-base noop=../repo-noop \
+#     fair_refuse=../repo-fair-refuse adv_parser=../repo-adv-parser \
+#     adv_probe=../repo-probe adv_halfrel=../repo-adv-halfrel \
+#     adv_drop_all=../repo-adv3 adv_tbl_name=../repo-adv1 \
+#     adv_qtn_walk=../repo-adv2 adv_no_counters=../repo-adv4 \
+#     r4a062eca=... r9a88486b=... r7759fd98=... rf70fde26=... rc1e51974=...
+#   (the r* trees are the five platform runs of job 1e5404aa, reconstructed
+#    from their traces and sha256-verified file by file)
+
+scoreboard: blockers hold 0.60 of the weight, flat cap 0.60
+
+=== gold (/Users/valerii/WebstormProjects/swe-task-factory/pilots/dump-subset-schema-object-filter/repo)
+  repo_gates_green                     PASS 1.000   72.5s
+  full_path_and_api_unchanged          PASS 1.000    2.0s
+  subset_restores_and_rows_exact       PASS 1.000    0.2s
+  restored_matches_original            PASS 1.000    0.2s
+  behaviour_legs_coverage              PASS 1.000    0.2s
+  next_write_matches_original          PASS 1.000    0.2s
+  -> reward 1.000 (uncapped 1.000, cap -, failed blockers: none)
+
+=== base (/Users/valerii/WebstormProjects/swe-task-factory/pilots/dump-subset-schema-object-filter/repo-base)
+  repo_gates_green                     PASS 1.000   71.9s
+  full_path_and_api_unchanged          PASS 1.000    1.9s
+  subset_restores_and_rows_exact       FAIL 0.000    0.2s
+  restored_matches_original            FAIL 0.000    0.2s
+  behaviour_legs_coverage              FAIL 0.000    0.2s
+  next_write_matches_original          FAIL 0.000    0.2s
+  -> reward 0.000 (uncapped 0.000, cap 0.600, failed blockers: subset_restores_and_rows_exact, restored_matches_original, next_write_matches_original)
+     (identical to the base checkout; tasks.py would also short-circuit this to 0.000 on an empty diff, but the number above was earned criterion by criterion)
+
+=== noop (/Users/valerii/WebstormProjects/swe-task-factory/pilots/dump-subset-schema-object-filter/repo-noop)
+  repo_gates_green                     PASS 1.000   71.7s
+  full_path_and_api_unchanged          PASS 1.000    2.0s
+  subset_restores_and_rows_exact       FAIL 0.000    0.2s
+  restored_matches_original            FAIL 0.000    0.2s
+  behaviour_legs_coverage              FAIL 0.000    0.2s
+  next_write_matches_original          FAIL 0.000    0.2s
+  -> reward 0.000 (uncapped 0.000, cap 0.600, failed blockers: subset_restores_and_rows_exact, restored_matches_original, next_write_matches_original)
+
+=== fair_refuse (/Users/valerii/WebstormProjects/swe-task-factory/pilots/dump-subset-schema-object-filter/repo-fair-refuse)
+  repo_gates_green                     PASS 1.000   69.9s
+  full_path_and_api_unchanged          PASS 1.000    2.0s
+  subset_restores_and_rows_exact       PASS 1.000    0.2s
+  restored_matches_original            PASS 1.000    0.2s
+  behaviour_legs_coverage              PASS 1.000    0.2s
+  next_write_matches_original          PASS 1.000    0.2s
+  -> reward 1.000 (uncapped 1.000, cap -, failed blockers: none)
+
+=== adv_parser (/Users/valerii/WebstormProjects/swe-task-factory/pilots/dump-subset-schema-object-filter/repo-adv-parser)
+  repo_gates_green                     PASS 1.000   72.9s
+  full_path_and_api_unchanged          PASS 1.000    1.9s
+  subset_restores_and_rows_exact       PASS 1.000    0.2s
+  restored_matches_original            FAIL 0.000    0.2s
+  behaviour_legs_coverage              FAIL 0.700    0.2s
+  next_write_matches_original          PASS 1.000    0.2s
+  -> reward 0.280 (uncapped 0.280, cap 0.600, failed blockers: restored_matches_original)
+
+=== adv_probe (/Users/valerii/WebstormProjects/swe-task-factory/pilots/dump-subset-schema-object-filter/repo-probe)
+  repo_gates_green                     PASS 1.000   71.4s
+  full_path_and_api_unchanged          PASS 1.000    2.0s
+  subset_restores_and_rows_exact       PASS 1.000    0.2s
+  restored_matches_original            FAIL 0.000    0.2s
+  behaviour_legs_coverage              FAIL 0.650    0.2s
+  next_write_matches_original          PASS 1.000    0.2s
+  -> reward 0.260 (uncapped 0.260, cap 0.600, failed blockers: restored_matches_original)
+
+=== adv_halfrel (/Users/valerii/WebstormProjects/swe-task-factory/pilots/dump-subset-schema-object-filter/repo-adv-halfrel)
+  repo_gates_green                     PASS 1.000   73.5s
+  full_path_and_api_unchanged          PASS 1.000    2.2s
+  subset_restores_and_rows_exact       PASS 1.000    0.2s
+  restored_matches_original            FAIL 0.000    0.2s
+  behaviour_legs_coverage              FAIL 0.950    0.3s
+  next_write_matches_original          PASS 1.000    0.2s
+  -> reward 0.380 (uncapped 0.380, cap 0.600, failed blockers: restored_matches_original)
+
+=== adv_drop_all (/Users/valerii/WebstormProjects/swe-task-factory/pilots/dump-subset-schema-object-filter/repo-adv3)
+  repo_gates_green                     PASS 1.000   76.9s
+  full_path_and_api_unchanged          PASS 1.000    2.4s
+  subset_restores_and_rows_exact       PASS 1.000    0.4s
+  restored_matches_original            FAIL 0.000    0.3s
+  behaviour_legs_coverage              FAIL 0.000    0.4s
+  next_write_matches_original          FAIL 0.000    0.3s
+  -> reward 0.000 (uncapped 0.000, cap 0.600, failed blockers: restored_matches_original, next_write_matches_original)
+
+=== adv_tbl_name (/Users/valerii/WebstormProjects/swe-task-factory/pilots/dump-subset-schema-object-filter/repo-adv1)
+  repo_gates_green                     PASS 1.000   76.4s
+  full_path_and_api_unchanged          PASS 1.000    1.9s
+  subset_restores_and_rows_exact       PASS 1.000    0.2s
+  restored_matches_original            FAIL 0.000    0.2s
+  behaviour_legs_coverage              FAIL 0.150    0.2s
+  next_write_matches_original          FAIL 0.000    0.2s
+  -> reward 0.060 (uncapped 0.060, cap 0.600, failed blockers: restored_matches_original, next_write_matches_original)
+
+=== adv_qtn_walk (/Users/valerii/WebstormProjects/swe-task-factory/pilots/dump-subset-schema-object-filter/repo-adv2)
+  repo_gates_green                     PASS 1.000   74.5s
+  full_path_and_api_unchanged          PASS 1.000    1.9s
+  subset_restores_and_rows_exact       PASS 1.000    0.2s
+  restored_matches_original            FAIL 0.000    0.2s
+  behaviour_legs_coverage              FAIL 0.450    0.2s
+  next_write_matches_original          FAIL 0.000    0.2s
+  -> reward 0.180 (uncapped 0.180, cap 0.600, failed blockers: restored_matches_original, next_write_matches_original)
+
+=== adv_no_counters (/Users/valerii/WebstormProjects/swe-task-factory/pilots/dump-subset-schema-object-filter/repo-adv4)
+  repo_gates_green                     PASS 1.000   76.5s
+  full_path_and_api_unchanged          PASS 1.000    2.9s
+  subset_restores_and_rows_exact       PASS 1.000    0.2s
+  restored_matches_original            FAIL 0.000    0.2s
+  behaviour_legs_coverage              FAIL 0.650    0.2s
+  next_write_matches_original          FAIL 0.000    0.2s
+  -> reward 0.260 (uncapped 0.260, cap 0.600, failed blockers: restored_matches_original, next_write_matches_original)
+
+=== r4a062eca (/Users/valerii/WebstormProjects/swe-task-factory/pilots/dump-subset-schema-object-filter/reweight-v3/runs/4a062eca/repo)
+  repo_gates_green                     PASS 1.000   74.0s
+  full_path_and_api_unchanged          PASS 1.000    2.0s
+  subset_restores_and_rows_exact       PASS 1.000    0.2s
+  restored_matches_original            FAIL 0.000    0.2s
+  behaviour_legs_coverage              FAIL 0.750    0.2s
+  next_write_matches_original          PASS 1.000    0.2s
+  -> reward 0.300 (uncapped 0.300, cap 0.600, failed blockers: restored_matches_original)
+
+=== r9a88486b (/Users/valerii/WebstormProjects/swe-task-factory/pilots/dump-subset-schema-object-filter/reweight-v3/runs/9a88486b/repo)
+  repo_gates_green                     PASS 1.000   75.7s
+  full_path_and_api_unchanged          PASS 1.000    2.0s
+  subset_restores_and_rows_exact       PASS 1.000    0.2s
+  restored_matches_original            FAIL 0.000    0.2s
+  behaviour_legs_coverage              FAIL 0.800    0.2s
+  next_write_matches_original          PASS 1.000    0.2s
+  -> reward 0.320 (uncapped 0.320, cap 0.600, failed blockers: restored_matches_original)
+
+=== r7759fd98 (/Users/valerii/WebstormProjects/swe-task-factory/pilots/dump-subset-schema-object-filter/reweight-v3/runs/7759fd98/repo)
+  repo_gates_green                     PASS 1.000   76.1s
+  full_path_and_api_unchanged          PASS 1.000    2.0s
+  subset_restores_and_rows_exact       PASS 1.000    0.2s
+  restored_matches_original            FAIL 0.000    0.2s
+  behaviour_legs_coverage              FAIL 0.750    0.2s
+  next_write_matches_original          FAIL 0.000    0.2s
+  -> reward 0.300 (uncapped 0.300, cap 0.600, failed blockers: restored_matches_original, next_write_matches_original)
+
+=== rf70fde26 (/Users/valerii/WebstormProjects/swe-task-factory/pilots/dump-subset-schema-object-filter/reweight-v3/runs/f70fde26/repo)
+  repo_gates_green                     PASS 1.000   76.9s
+  full_path_and_api_unchanged          PASS 1.000    2.0s
+  subset_restores_and_rows_exact       PASS 1.000    0.2s
+  restored_matches_original            FAIL 0.000    0.2s
+  behaviour_legs_coverage              FAIL 0.750    0.2s
+  next_write_matches_original          PASS 1.000    0.2s
+  -> reward 0.300 (uncapped 0.300, cap 0.600, failed blockers: restored_matches_original)
+
+=== rc1e51974 (/Users/valerii/WebstormProjects/swe-task-factory/pilots/dump-subset-schema-object-filter/reweight-v3/runs/c1e51974/repo)
+  repo_gates_green                     PASS 1.000   75.5s
+  full_path_and_api_unchanged          PASS 1.000    2.0s
+  subset_restores_and_rows_exact       PASS 1.000    0.2s
+  restored_matches_original            PASS 1.000    0.2s
+  behaviour_legs_coverage              PASS 1.000    0.2s
+  next_write_matches_original          PASS 1.000    0.2s
+  -> reward 1.000 (uncapped 1.000, cap -, failed blockers: none)
+
+| criterion | weight | blocker | gold | base | noop | fair_refuse | adv_parser | adv_probe | adv_halfrel | adv_drop_all | adv_tbl_name | adv_qtn_walk | adv_no_counters | r4a062eca | r9a88486b | r7759fd98 | rf70fde26 | rc1e51974 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `repo_gates_green` | 0% | yes | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| `full_path_and_api_unchanged` | 0% | yes | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| `subset_restores_and_rows_exact` | 0% | yes | PASS | FAIL | FAIL | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+| `restored_matches_original` | 60% | yes | PASS | FAIL | FAIL | PASS | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | FAIL | PASS |
+| `behaviour_legs_coverage` | 40% | no | PASS | FAIL | FAIL | PASS | FAIL (0.70) | FAIL (0.65) | FAIL (0.95) | FAIL | FAIL (0.15) | FAIL (0.45) | FAIL (0.65) | FAIL (0.75) | FAIL (0.80) | FAIL (0.75) | FAIL (0.75) | PASS |
+| `next_write_matches_original` | 0% | yes | PASS | FAIL | FAIL | PASS | PASS | PASS | PASS | FAIL | FAIL | FAIL | FAIL | PASS | PASS | FAIL | PASS | PASS |
+| **reward** | | | **1.00** | **0.00** | **0.00** | **1.00** | **0.28** | **0.26** | **0.38** | **0.00** | **0.06** | **0.18** | **0.26** | **0.30** | **0.32** | **0.30** | **0.30** | **1.00** |
+
+CALIBRATION OK -- every invariant holds.

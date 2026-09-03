@@ -1,10 +1,9 @@
-# Builds run from the repo root; the context is only what the images COPY,
+# Builds run from the repo root; the context is only what the image COPYs,
 # plus the Dockerfile itself (remote builders read it from the context).
+# Task folders never enter the image: they are uploads.
 *
 !Dockerfile.hud
 !env.py
 !tasks.py
-!task
 !coding
-!instances
 **/__pycache__

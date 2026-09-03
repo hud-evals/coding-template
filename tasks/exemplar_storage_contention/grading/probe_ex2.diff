@@ -1,0 +1,802 @@
+diff --git a/tsdb/exemplar.go b/tsdb/exemplar.go
+index 36b0a7e..aaeca93 100644
+--- a/tsdb/exemplar.go
++++ b/tsdb/exemplar.go
+@@ -18,8 +18,10 @@ import (
+ 	"errors"
+ 	"slices"
+ 	"sync"
++	"sync/atomic"
+ 	"unicode/utf8"
+ 
++	"github.com/cespare/xxhash/v2"
+ 	"github.com/prometheus/client_golang/prometheus"
+ 
+ 	"github.com/prometheus/prometheus/config"
+@@ -33,18 +35,73 @@ const (
+ 	noExemplar = -1
+ 	// Estimated number of exemplars per series, for sizing the index.
+ 	estimatedExemplarsPerSeries = 16
++	// Number of lock stripes used to protect individual series and individual
++	// slots of the circular buffer. Must be a power of two.
++	exemplarStripes = 512
++	// Mask to map a hash (or a buffer slot) onto a stripe.
++	exemplarStripeMask = exemplarStripes - 1
++	// How often (in appends into a full buffer) the gauge of the oldest stored
++	// exemplar is refreshed. Writing it on every append would make every
++	// appender write to the same cache line.
++	metricsRefreshMask = 63
+ )
+ 
++// paddedMutex is a mutex padded to (roughly) a cache line, so that unrelated
++// stripes do not share one and false-share it under contention.
++type paddedMutex struct {
++	sync.Mutex
++	_ [56]byte
++}
++
++// CircularExemplarStorage stores the exemplars of all series in a single
++// circular buffer, so that the configured maximum is a global upper bound and
++// exemplars are evicted in ingestion order across all series.
++//
++// Locking, from the outermost to the innermost lock (locks must never be taken
++// in another order):
++//
++//  1. lock: guards the layout of the storage, i.e. the exemplars slice itself
++//     and the out-of-order time window. It is only taken for writing by the
++//     operations that invalidate everything else (Resize, changing the OOO
++//     window, IterateExemplars). Everything else holds it for reading, so
++//     appends to different series proceed concurrently.
++//  2. slotLocks[slot & exemplarStripeMask]: held by the appender that claimed
++//     slot, from the moment it claims it until it has written its entry. It
++//     serialises two appenders that claim the same slot on consecutive laps
++//     around the buffer.
++//  3. seriesLocks[hash(labels) & exemplarStripeMask]: guards everything owned
++//     by a series: the fields of its indexEntry and the exemplar/prev/next/ref
++//     fields of the buffer entries it currently occupies. An appender that has
++//     to evict an entry of another series takes both stripes, ordered by stripe
++//     index so that two appenders cannot deadlock.
++//
++// nextIndexMtx and indexMtx are leaves: they are never held while acquiring any
++// other lock, so they may be taken while holding any of the above.
+ type CircularExemplarStorage struct {
+-	lock                sync.RWMutex
+-	exemplars           []circularBufferEntry
+-	nextIndex           int
+-	metrics             *ExemplarMetrics
+-	oooTimeWindowMillis int64
++	lock      sync.RWMutex
++	exemplars []circularBufferEntry
++
++	// nextIndex is the next free slot of the circular buffer. nextIndexMtx is
++	// only held for the few instructions it takes to claim a slot.
++	nextIndexMtx sync.Mutex
++	nextIndex    int
++
++	slotLocks   [exemplarStripes]paddedMutex
++	seriesLocks [exemplarStripes]paddedMutex
+ 
+ 	// Map of series labels as a string to index entry, which points to the first
+ 	// and last exemplar for the series in the exemplars circular buffer.
+-	index map[string]*indexEntry
++	// indexMtx guards the map itself, not the contents of the entries it holds;
++	// those are guarded by the series' stripe in seriesLocks.
++	indexMtx sync.RWMutex
++	index    map[string]*indexEntry
++
++	// Number of occupied slots in the buffer, maintained incrementally so that
++	// updating metrics does not require walking the buffer on every append.
++	exemplarsInBuffer atomic.Int64
++
++	metrics             *ExemplarMetrics
++	oooTimeWindowMillis int64
+ }
+ 
+ type indexEntry struct {
+@@ -154,7 +211,67 @@ func (ce *CircularExemplarStorage) Querier(context.Context) (storage.ExemplarQue
+ 	return ce, nil
+ }
+ 
++// seriesStripe returns the index of the lock stripe protecting the series with
++// the given (labels.Labels.Bytes) representation. Both the appender of a series
++// and an appender evicting one of its exemplars derive the stripe the same way,
++// from the label set alone.
++func seriesStripe(seriesLabels []byte) int {
++	return int(xxhash.Sum64(seriesLabels) & exemplarStripeMask)
++}
++
++// seriesStripeOf is seriesStripe for a series we only have the labels of, e.g.
++// the series an exemplar is evicted from.
++func seriesStripeOf(lbls labels.Labels) int {
++	var buf [1024]byte
++	return seriesStripe(lbls.Bytes(buf[:]))
++}
++
++// getIndex looks up the index entry of a series. indexMtx is a leaf lock, so
++// this may be called with any of the other locks held.
++func (ce *CircularExemplarStorage) getIndex(seriesLabels []byte) *indexEntry {
++	ce.indexMtx.RLock()
++	idx := ce.index[string(seriesLabels)]
++	ce.indexMtx.RUnlock()
++	return idx
++}
++
++// setIndex adds the index entry of a new series. It must be called with the
++// lock of that series held, so that two appenders cannot create two entries for
++// the same series.
++func (ce *CircularExemplarStorage) setIndex(seriesLabels []byte, idx *indexEntry) {
++	ce.indexMtx.Lock()
++	ce.index[string(seriesLabels)] = idx
++	ce.metrics.seriesWithExemplarsInStorage.Set(float64(len(ce.index)))
++	ce.indexMtx.Unlock()
++}
++
++// lockSeriesPair locks the stripe of the series being appended to and, if the
++// slot that is being reused belongs to a different series, that series' stripe
++// as well. The stripes are locked in ascending order, so that appenders needing
++// the same two stripes cannot deadlock. victim may be negative to only lock the
++// series stripe. The returned mutexes have to be unlocked in reverse order;
++// second is nil if only one stripe had to be locked.
++func (ce *CircularExemplarStorage) lockSeriesPair(series, victim int) (first, second *paddedMutex) {
++	if victim < 0 || victim == series {
++		first = &ce.seriesLocks[series]
++		first.Lock()
++		return first, nil
++	}
++	low, high := series, victim
++	if high < low {
++		low, high = high, low
++	}
++	first, second = &ce.seriesLocks[low], &ce.seriesLocks[high]
++	first.Lock()
++	second.Lock()
++	return first, second
++}
++
+ // Select returns exemplars for a given set of label matchers.
++//
++// The exemplars of a single series are returned in ingestion order, but the
++// result is not a consistent snapshot across series: series are read one after
++// another, so appends to series that have not been read yet may be observed.
+ func (ce *CircularExemplarStorage) Select(start, end int64, matchers ...[]*labels.Matcher) ([]exemplar.QueryResult, error) {
+ 	ret := make([]exemplar.QueryResult, 0)
+ 
+@@ -165,31 +282,25 @@ func (ce *CircularExemplarStorage) Select(start, end int64, matchers ...[]*label
+ 		return ret, nil
+ 	}
+ 
+-	// Loop through each index entry, which will point us to first/last exemplar for each series.
++	// Take a snapshot of the matching index entries, so that the index is not
++	// locked while the (comparatively slow) linked lists are walked, which would
++	// block appends to series that are not queried at all. The seriesLabels of
++	// an index entry never change, so matching can be done here.
++	ce.indexMtx.RLock()
++	candidates := make([]*indexEntry, 0, len(ce.index))
+ 	for _, idx := range ce.index {
+-		var se exemplar.QueryResult
+-		e := ce.exemplars[idx.oldest]
+-		if e.exemplar.Ts > end || ce.exemplars[idx.newest].exemplar.Ts < start {
+-			continue
++		if matchesSomeMatcherSet(idx.seriesLabels, matchers) {
++			candidates = append(candidates, idx)
+ 		}
+-		if !matchesSomeMatcherSet(idx.seriesLabels, matchers) {
+-			continue
+-		}
+-		se.SeriesLabels = idx.seriesLabels
+-
+-		// TODO: Since we maintain a doubly-linked-list, we can also iterate from head to tail
+-		//  which might be more performant if the selected interval is skewed to the head.
++	}
++	ce.indexMtx.RUnlock()
+ 
+-		// Loop through all exemplars in the circular buffer for the current series.
+-		for e.exemplar.Ts <= end {
+-			if e.exemplar.Ts >= start {
+-				se.Exemplars = append(se.Exemplars, e.exemplar)
+-			}
+-			if e.next == noExemplar {
+-				break
+-			}
+-			e = ce.exemplars[e.next]
+-		}
++	// Loop through each index entry, which will point us to first/last exemplar for each series.
++	for _, idx := range candidates {
++		sl := &ce.seriesLocks[seriesStripeOf(idx.seriesLabels)]
++		sl.Lock()
++		se := ce.selectSeries(idx, start, end)
++		sl.Unlock()
+ 		if len(se.Exemplars) > 0 {
+ 			ret = append(ret, se)
+ 		}
+@@ -202,6 +313,39 @@ func (ce *CircularExemplarStorage) Select(start, end int64, matchers ...[]*label
+ 	return ret, nil
+ }
+ 
++// selectSeries collects the exemplars of a single series that fall into
++// [start, end]. It must be called with the lock of that series held.
++func (ce *CircularExemplarStorage) selectSeries(idx *indexEntry, start, end int64) exemplar.QueryResult {
++	var se exemplar.QueryResult
++
++	// The series may have been emptied and dropped from the index after it was
++	// picked up by Select.
++	if idx.oldest == noExemplar || idx.newest == noExemplar {
++		return se
++	}
++
++	e := ce.exemplars[idx.oldest]
++	if e.exemplar.Ts > end || ce.exemplars[idx.newest].exemplar.Ts < start {
++		return se
++	}
++	se.SeriesLabels = idx.seriesLabels
++
++	// TODO: Since we maintain a doubly-linked-list, we can also iterate from head to tail
++	//  which might be more performant if the selected interval is skewed to the head.
++
++	// Loop through all exemplars in the circular buffer for the current series.
++	for e.exemplar.Ts <= end {
++		if e.exemplar.Ts >= start {
++			se.Exemplars = append(se.Exemplars, e.exemplar)
++		}
++		if e.next == noExemplar {
++			break
++		}
++		e = ce.exemplars[e.next]
++	}
++	return se
++}
++
+ func matchesSomeMatcherSet(lbls labels.Labels, matchers [][]*labels.Matcher) bool {
+ Outer:
+ 	for _, ms := range matchers {
+@@ -219,15 +363,24 @@ func (ce *CircularExemplarStorage) ValidateExemplar(l labels.Labels, e exemplar.
+ 	var buf [1024]byte
+ 	seriesLabels := l.Bytes(buf[:])
+ 
+-	// TODO(bwplotka): This lock can lock all scrapers, there might high contention on this on scale.
+-	// Optimize by moving the lock to be per series (& benchmark it).
+ 	ce.lock.RLock()
+ 	defer ce.lock.RUnlock()
+-	return ce.validateExemplar(ce.index[string(seriesLabels)], e, false)
++
++	// Only the series this exemplar belongs to has to be locked, exemplars of
++	// different series are validated concurrently.
++	sl := &ce.seriesLocks[seriesStripe(seriesLabels)]
++	sl.Lock()
++	defer sl.Unlock()
++
++	return ce.validateExemplar(ce.getIndex(seriesLabels), e, false)
+ }
+ 
+-// Not thread safe. The appended parameters tells us whether this is an external validation, or internal
+-// as a result of an AddExemplar call, in which case we should update any relevant metrics.
++// validateExemplar checks whether e may be appended to the series pointed to by
++// idx (nil for a series without stored exemplars). The appended parameter tells
++// us whether this is an external validation, or internal as a result of an
++// AddExemplar call, in which case we should update any relevant metrics.
++// It must be called with the storage lock held for reading and the lock of the
++// series held.
+ func (ce *CircularExemplarStorage) validateExemplar(idx *indexEntry, e exemplar.Exemplar, appended bool) error {
+ 	if len(ce.exemplars) == 0 {
+ 		return storage.ErrExemplarsDisabled
+@@ -381,11 +534,14 @@ func (ce *CircularExemplarStorage) shrink(l int64) (migrated int) {
+ 	return migrated
+ }
+ 
++// AddExemplar appends an exemplar to the series it belongs to. Appends to
++// different series do not block each other: only the stripe of the appended
++// series (plus, if the reused slot holds an exemplar of another series, that
++// series' stripe) is locked, and the globally shared circular buffer is only
++// locked for as long as it takes to claim a slot in it.
+ func (ce *CircularExemplarStorage) AddExemplar(l labels.Labels, e exemplar.Exemplar) error {
+-	// TODO(bwplotka): This lock can lock all scrapers, there might high contention on this on scale.
+-	// Optimize by moving the lock to be per series (& benchmark it).
+-	ce.lock.Lock()
+-	defer ce.lock.Unlock()
++	ce.lock.RLock()
++	defer ce.lock.RUnlock()
+ 
+ 	if len(ce.exemplars) == 0 {
+ 		return storage.ErrExemplarsDisabled
+@@ -393,44 +549,165 @@ func (ce *CircularExemplarStorage) AddExemplar(l labels.Labels, e exemplar.Exemp
+ 
+ 	var buf [1024]byte
+ 	seriesLabels := l.Bytes(buf[:])
+-
+-	idx, indexExists := ce.index[string(seriesLabels)]
+-	err := ce.validateExemplar(idx, e, true)
+-	if err != nil {
+-		if errors.Is(err, storage.ErrDuplicateExemplar) {
+-			// Duplicate exemplar, noop.
+-			return nil
+-		}
++	stripe := seriesStripe(seriesLabels)
++
++	// First work out whether this exemplar is going to be stored at all, holding
++	// only the lock of its own series. This is where the expensive part of an
++	// append happens (validating the exemplar and, for out-of-order exemplars,
++	// walking the series' linked list), and doing it before a slot is claimed
++	// keeps no-ops (duplicates and out-of-order exemplars) from consuming a slot
++	// of the circular buffer.
++	sl := &ce.seriesLocks[stripe]
++	sl.Lock()
++	plan, skip, err := ce.prepareAppend(ce.getIndex(seriesLabels), e)
++	sl.Unlock()
++	switch {
++	case errors.Is(err, storage.ErrDuplicateExemplar):
++		// Duplicate exemplar, noop.
++		return nil
++	case err != nil:
+ 		return err
++	case skip:
++		return nil
++	}
++
++	// Claim the next slot of the circular buffer. This is the only globally
++	// shared state on the append path and it is held for a handful of
++	// instructions.
++	ce.nextIndexMtx.Lock()
++	slot := ce.nextIndex
++	ce.nextIndex = (slot + 1) % len(ce.exemplars)
++	ce.nextIndexMtx.Unlock()
++
++	// The slot lock is held until the entry has been written, so that the
++	// appender claiming this same slot on the next lap around the buffer cannot
++	// overtake us and see a half written entry.
++	slotLock := &ce.slotLocks[slot&exemplarStripeMask]
++	slotLock.Lock()
++
++	victimStripe := -1
++	if victim := ce.exemplars[slot].ref; victim != nil {
++		victimStripe = seriesStripeOf(victim.seriesLabels)
++	}
++	first, second := ce.lockSeriesPair(stripe, victimStripe)
++
++	err = ce.appendToSlot(slot, l, seriesLabels, e, plan)
++
++	if second != nil {
++		second.Unlock()
++	}
++	first.Unlock()
++	slotLock.Unlock()
++	return err
++}
++
++// appendPlan is the outcome of validating an exemplar against a series: whether
++// and where it has to be linked into the series' list. It also records the parts
++// of the series the plan depends on, so that it can be cheaply revalidated once
++// the locks needed to carry it out are held.
++type appendPlan struct {
++	idx            *indexEntry
++	insertionIndex int
++	outOfOrder     bool
++
++	oldest, newest, insertionNext int
++}
++
++// prepareAppend validates e against the current state of the series pointed to
++// by idx (nil if the series has no stored exemplars) and works out where in the
++// series' linked list it would have to be inserted. skip is true if appending e
++// is a no-op. It must be called with the storage lock held for reading and the
++// lock of the series held.
++func (ce *CircularExemplarStorage) prepareAppend(idx *indexEntry, e exemplar.Exemplar) (plan appendPlan, skip bool, err error) {
++	if err := ce.validateExemplar(idx, e, true); err != nil {
++		return plan, false, err
+ 	}
++	if idx == nil {
++		return plan, false, nil
++	}
++	plan.idx, plan.oldest, plan.newest = idx, idx.oldest, idx.newest
+ 
+ 	// If we insert an out-of-order exemplar, we preemptively find the insertion
+ 	// index to check for duplicates.
+-	var insertionIndex int
+-	var outOfOrder bool
+-	if indexExists {
+-		outOfOrder = e.Ts >= ce.exemplars[idx.oldest].exemplar.Ts && e.Ts < ce.exemplars[idx.newest].exemplar.Ts
+-		if outOfOrder {
+-			insertionIndex = ce.findInsertionIndex(e, idx)
+-			if ce.exemplars[insertionIndex].exemplar.Ts == e.Ts {
+-				// Assume duplicate exemplar, noop.
+-				// Native histograms will exercise this code path a lot due to
+-				// having multiple exemplars per series so checking the
+-				// value and labels would be too expensive.
+-				return nil
+-			}
++	if e.Ts < ce.exemplars[idx.oldest].exemplar.Ts || e.Ts >= ce.exemplars[idx.newest].exemplar.Ts {
++		return plan, false, nil
++	}
++	plan.insertionIndex = ce.findInsertionIndex(e, idx)
++	if ce.exemplars[plan.insertionIndex].exemplar.Ts == e.Ts {
++		// Assume duplicate exemplar, noop.
++		// Native histograms will exercise this code path a lot due to
++		// having multiple exemplars per series so checking the
++		// value and labels would be too expensive.
++		return plan, true, nil
++	}
++	plan.outOfOrder = true
++	plan.insertionNext = ce.exemplars[plan.insertionIndex].next
++	return plan, false, nil
++}
++
++// stillValid reports whether the series a plan was made for is unchanged, i.e.
++// whether the plan can be carried out as is. A series can only be modified
++// while its lock is held, so it is enough to look at the parts of it the plan
++// depends on: the ends of the list, and the entry the exemplar is linked after.
++// Note that an index entry is only ever dropped from the index once its list is
++// empty, so an unchanged, non-empty list also means the entry is still the one
++// the index holds for the series.
++func (ce *CircularExemplarStorage) stillValid(plan appendPlan) bool {
++	idx := plan.idx
++	if idx == nil {
++		return false
++	}
++	if idx.oldest != plan.oldest || idx.newest != plan.newest {
++		return false
++	}
++	if plan.outOfOrder {
++		entry := &ce.exemplars[plan.insertionIndex]
++		if entry.ref != idx || entry.next != plan.insertionNext {
++			return false
++		}
++	}
++	return true
++}
++
++// appendToSlot writes e into the given slot of the circular buffer, evicting
++// whichever exemplar occupied it. It must be called with the storage lock held
++// for reading, the slot locked, and the locks of both the appended series and
++// the series owning the slot held.
++func (ce *CircularExemplarStorage) appendToSlot(slot int, l labels.Labels, seriesLabels []byte, e exemplar.Exemplar, plan appendPlan) error {
++	// The series may have been modified between planning the append and
++	// acquiring the locks needed to carry it out, in which case the plan has to
++	// be made again. This only happens if the same series is appended to
++	// concurrently or if one of its exemplars was evicted in between.
++	if !ce.stillValid(plan) {
++		var (
++			skip bool
++			err  error
++		)
++		plan, skip, err = ce.prepareAppend(ce.getIndex(seriesLabels), e)
++		switch {
++		case errors.Is(err, storage.ErrDuplicateExemplar):
++			return nil
++		case err != nil:
++			return err
++		case skip:
++			return nil
+ 		}
+ 	}
++	idx, insertionIndex, outOfOrder := plan.idx, plan.insertionIndex, plan.outOfOrder
+ 
+ 	// If the index didn't exist (new series), create one.
++	indexExists := idx != nil
+ 	if !indexExists {
+ 		idx = &indexEntry{seriesLabels: l}
+-		ce.index[string(seriesLabels)] = idx
++		ce.setIndex(seriesLabels, idx)
+ 	}
+ 
+-	// Remove entries if the buffer is full.
+-	if prev := &ce.exemplars[ce.nextIndex]; prev.ref != nil {
++	// Remove the entry currently occupying the slot, the buffer is full.
++	var evictedTs int64
++	evicted := false
++	if prev := &ce.exemplars[slot]; prev.ref != nil {
+ 		prevRef := prev.ref
++		evicted, evictedTs = true, prev.exemplar.Ts
+ 		if ce.removeExemplar(prev) {
+ 			if prevRef == idx {
+ 				// Do not delete the indexEntry we're inserting to.
+@@ -438,7 +715,7 @@ func (ce *CircularExemplarStorage) AddExemplar(l labels.Labels, e exemplar.Exemp
+ 			} else {
+ 				ce.removeIndex(prevRef)
+ 			}
+-		} else if outOfOrder && insertionIndex == ce.nextIndex && prevRef == idx {
++		} else if outOfOrder && insertionIndex == slot && prevRef == idx {
+ 			// The entry we were going to insert after was removed from the same series.
+ 			// Recalculate the insertion point in the updated linked list to avoid
+ 			// creating a self-referencing loop.
+@@ -447,50 +724,73 @@ func (ce *CircularExemplarStorage) AddExemplar(l labels.Labels, e exemplar.Exemp
+ 	}
+ 
+ 	// We create a new entry in the linked list.
+-	ce.exemplars[ce.nextIndex].exemplar = e
+-	ce.exemplars[ce.nextIndex].ref = idx
++	ce.exemplars[slot].exemplar = e
++	ce.exemplars[slot].ref = idx
+ 
+ 	switch {
+ 	case !indexExists:
+ 		// Add the first and only exemplar to the list.
+-		idx.oldest = ce.nextIndex
+-		idx.newest = ce.nextIndex
+-		ce.exemplars[ce.nextIndex].prev = noExemplar
+-		ce.exemplars[ce.nextIndex].next = noExemplar
++		idx.oldest = slot
++		idx.newest = slot
++		ce.exemplars[slot].prev = noExemplar
++		ce.exemplars[slot].next = noExemplar
+ 	case e.Ts >= ce.exemplars[idx.newest].exemplar.Ts:
+ 		// Add the exemplar at the tip (after newest).
+-		ce.exemplars[idx.newest].next = ce.nextIndex
+-		ce.exemplars[ce.nextIndex].prev = idx.newest
+-		ce.exemplars[ce.nextIndex].next = noExemplar
+-		idx.newest = ce.nextIndex
++		ce.exemplars[idx.newest].next = slot
++		ce.exemplars[slot].prev = idx.newest
++		ce.exemplars[slot].next = noExemplar
++		idx.newest = slot
+ 	case e.Ts < ce.exemplars[idx.oldest].exemplar.Ts:
+ 		// Add the exemplar at the tail (before oldest).
+-		ce.exemplars[idx.oldest].prev = ce.nextIndex
+-		ce.exemplars[ce.nextIndex].prev = noExemplar
+-		ce.exemplars[ce.nextIndex].next = idx.oldest
+-		idx.oldest = ce.nextIndex
++		ce.exemplars[idx.oldest].prev = slot
++		ce.exemplars[slot].prev = noExemplar
++		ce.exemplars[slot].next = idx.oldest
++		idx.oldest = slot
+ 	default:
+ 		// Insert the exemplar into the list by finding the most recent
+ 		// in-order exemplar that precedes it, and placing it after.
+ 		nextExemplar := ce.exemplars[insertionIndex].next
+-		ce.exemplars[ce.nextIndex].prev = insertionIndex
+-		ce.exemplars[ce.nextIndex].next = nextExemplar
+-		ce.exemplars[insertionIndex].next = ce.nextIndex
++		ce.exemplars[slot].prev = insertionIndex
++		ce.exemplars[slot].next = nextExemplar
++		ce.exemplars[insertionIndex].next = slot
+ 		if nextExemplar != noExemplar {
+-			ce.exemplars[nextExemplar].prev = ce.nextIndex
++			ce.exemplars[nextExemplar].prev = slot
+ 		}
+ 	}
+ 
+-	ce.nextIndex = (ce.nextIndex + 1) % len(ce.exemplars)
+-
+ 	ce.metrics.exemplarsAppended.Inc()
+-	ce.computeMetrics()
++	ce.updateAppendMetrics(slot, e, evicted, evictedTs)
+ 	return nil
+ }
+ 
++// updateAppendMetrics updates the storage metrics after a successful append.
++// Unlike computeMetrics it does not need a consistent view of the whole buffer,
++// so it can run while other series are being appended to.
++func (ce *CircularExemplarStorage) updateAppendMetrics(slot int, e exemplar.Exemplar, evicted bool, evictedTs int64) {
++	if evicted {
++		// The buffer is full, so the number of stored exemplars did not change.
++		// The oldest exemplar in the buffer is now the one right after the one
++		// we just dropped, which is what we approximate here to avoid having to
++		// read a slot we do not own. Since this is a shared gauge that would
++		// otherwise be written by every appender on every append, it is only
++		// refreshed every few appends.
++		if slot&metricsRefreshMask == 0 {
++			ce.metrics.lastExemplarsTs.Set(float64(evictedTs) / 1000)
++		}
++		return
++	}
++
++	ce.metrics.exemplarsInStorage.Set(float64(ce.exemplarsInBuffer.Add(1)))
++	if slot == 0 {
++		// The buffer is not full yet, so the entry we just wrote is the oldest.
++		ce.metrics.lastExemplarsTs.Set(float64(e.Ts) / 1000)
++	}
++}
++
+ // removeExemplar removes the given entry from the circular buffer. Returns true
+ // iff the deleted entry was the last entry (and the index is now empty).
+-// This function must be called with the lock acquired.
++// This function must be called with the lock of the series owning the entry
++// acquired.
+ func (ce *CircularExemplarStorage) removeExemplar(entry *circularBufferEntry) bool {
+ 	ref := entry.ref
+ 	if ref == nil {
+@@ -516,17 +816,21 @@ func (ce *CircularExemplarStorage) removeExemplar(entry *circularBufferEntry) bo
+ }
+ 
+ // removeIndex removes an indexEntry from the circular exemplar storage.
+-// This function must be called with the lock acquired.
++// This function must be called with the lock of the series acquired.
+ func (ce *CircularExemplarStorage) removeIndex(ref *indexEntry) {
+ 	var buf [1024]byte
+ 	entryLabels := ref.seriesLabels.Bytes(buf[:])
++	ce.indexMtx.Lock()
+ 	delete(ce.index, string(entryLabels))
++	ce.metrics.seriesWithExemplarsInStorage.Set(float64(len(ce.index)))
++	ce.indexMtx.Unlock()
+ }
+ 
+ // findInsertionIndex finds the position at which e should be placed in the
+ // doubly-linked list by traversing the linked list from idx.newest to idx.oldest
+ // and following back links. Since out-of-order exemplars commonly lie close to
+ // the newest entry, traversing from newest to oldest is usually faster.
++// This function must be called with the lock of the series acquired.
+ func (ce *CircularExemplarStorage) findInsertionIndex(e exemplar.Exemplar, idx *indexEntry) int {
+ 	for i := idx.newest; i != noExemplar; {
+ 		current := ce.exemplars[i]
+@@ -538,23 +842,33 @@ func (ce *CircularExemplarStorage) findInsertionIndex(e exemplar.Exemplar, idx *
+ 	return idx.oldest
+ }
+ 
++// computeMetrics recomputes all storage metrics by walking the whole buffer.
++// It must be called with the storage lock held for writing.
+ func (ce *CircularExemplarStorage) computeMetrics() {
+ 	ce.metrics.seriesWithExemplarsInStorage.Set(float64(len(ce.index)))
+ 
+ 	if len(ce.exemplars) == 0 {
++		ce.exemplarsInBuffer.Store(0)
+ 		ce.metrics.exemplarsInStorage.Set(float64(0))
+ 		ce.metrics.lastExemplarsTs.Set(float64(0))
+ 		return
+ 	}
+ 
++	stored := int64(0)
++	for i := range ce.exemplars {
++		if ce.exemplars[i].ref != nil {
++			stored++
++		}
++	}
++	ce.exemplarsInBuffer.Store(stored)
++	ce.metrics.exemplarsInStorage.Set(float64(stored))
++
+ 	if ce.exemplars[ce.nextIndex].ref != nil {
+-		ce.metrics.exemplarsInStorage.Set(float64(len(ce.exemplars)))
+ 		ce.metrics.lastExemplarsTs.Set(float64(ce.exemplars[ce.nextIndex].exemplar.Ts) / 1000)
+ 		return
+ 	}
+ 
+ 	// We did not yet fill the buffer.
+-	ce.metrics.exemplarsInStorage.Set(float64(ce.nextIndex))
+ 	if ce.exemplars[0].ref != nil {
+ 		ce.metrics.lastExemplarsTs.Set(float64(ce.exemplars[0].exemplar.Ts) / 1000)
+ 	}
+@@ -562,9 +876,12 @@ func (ce *CircularExemplarStorage) computeMetrics() {
+ 
+ // IterateExemplars iterates through all the exemplars from oldest to newest appended and calls
+ // the given function on all of them till the end (or) till the first function call that returns an error.
++//
++// It needs a consistent view of the whole buffer, so it takes the storage lock
++// exclusively and blocks appends while it runs.
+ func (ce *CircularExemplarStorage) IterateExemplars(f func(seriesLabels labels.Labels, e exemplar.Exemplar) error) error {
+-	ce.lock.RLock()
+-	defer ce.lock.RUnlock()
++	ce.lock.Lock()
++	defer ce.lock.Unlock()
+ 
+ 	idx := ce.nextIndex
+ 	l := len(ce.exemplars)
+diff --git a/tsdb/exemplar_test.go b/tsdb/exemplar_test.go
+index 10a0745..41ab511 100644
+--- a/tsdb/exemplar_test.go
++++ b/tsdb/exemplar_test.go
+@@ -1282,3 +1282,128 @@ func debugCircularBuffer(ce *CircularExemplarStorage) string {
+ 	fmt.Fprintf(&sb, "Next index: %d\n", ce.nextIndex)
+ 	return sb.String()
+ }
++
++// TestCircularExemplarStorage_Concurrent_AddExemplar_Resize_Select exercises the
++// per series locking of the storage: many series are appended to concurrently
++// while the buffer is resized (as a config reload does), while it is queried and
++// while it is walked as a whole (as the chunk snapshot writer does).
++//
++// It asserts the two invariants that the concurrency must not break: the
++// exemplars of a series are returned in the order they were ingested, and the
++// configured size stays an upper bound of what is retained.
++func TestCircularExemplarStorage_Concurrent_AddExemplar_Resize_Select(t *testing.T) {
++	const (
++		appenders          = 8
++		seriesPerAppender  = 16
++		exemplarsPerSeries = 100
++		size               = 1000
++	)
++
++	exs, err := NewCircularExemplarStorage(size, eMetrics, 0)
++	require.NoError(t, err)
++	es := exs.(*CircularExemplarStorage)
++
++	nameMatcher := []*labels.Matcher{labels.MustNewMatcher(labels.MatchEqual, "__name__", "test")}
++
++	// Every series is appended to by exactly one goroutine with increasing
++	// timestamps, so ingestion order is timestamp order.
++	requireOrdered := func(res []exemplar.QueryResult) {
++		for _, qr := range res {
++			for i := 1; i < len(qr.Exemplars); i++ {
++				if qr.Exemplars[i].Ts <= qr.Exemplars[i-1].Ts {
++					t.Errorf("exemplars of %s are out of ingestion order: %v", qr.SeriesLabels, qr.Exemplars)
++					return
++				}
++			}
++		}
++	}
++
++	var appendWg, bgWg sync.WaitGroup
++	done := make(chan struct{})
++
++	for a := range appenders {
++		appendWg.Add(1)
++		go func() {
++			defer appendWg.Done()
++			for i := range exemplarsPerSeries {
++				for s := range seriesPerAppender {
++					l := labels.FromStrings("__name__", "test", "appender", strconv.Itoa(a), "series", strconv.Itoa(s))
++					if err := es.AddExemplar(l, exemplar.Exemplar{
++						Labels: labels.FromStrings("trace_id", strconv.Itoa(i)),
++						Value:  float64(i),
++						Ts:     int64(i + 1),
++					}); err != nil {
++						t.Errorf("unexpected error appending exemplar: %s", err)
++						return
++					}
++				}
++			}
++		}()
++	}
++
++	// Config reloads resizing the buffer under the appenders.
++	bgWg.Add(1)
++	go func() {
++		defer bgWg.Done()
++		sizes := []int64{size, size / 2, 2 * size, size / 3}
++		for i := 0; ; i++ {
++			select {
++			case <-done:
++				return
++			default:
++			}
++			es.Resize(sizes[i%len(sizes)])
++		}
++	}()
++
++	// Queries running alongside the appends.
++	bgWg.Add(1)
++	go func() {
++		defer bgWg.Done()
++		for {
++			select {
++			case <-done:
++				return
++			default:
++			}
++			res, err := es.Select(0, math.MaxInt64, nameMatcher)
++			if err != nil {
++				t.Errorf("unexpected error selecting exemplars: %s", err)
++				return
++			}
++			requireOrdered(res)
++		}
++	}()
++
++	// Something walking the whole storage, like the chunk snapshot writer.
++	bgWg.Add(1)
++	go func() {
++		defer bgWg.Done()
++		for {
++			select {
++			case <-done:
++				return
++			default:
++			}
++			if err := es.IterateExemplars(func(labels.Labels, exemplar.Exemplar) error { return nil }); err != nil {
++				t.Errorf("unexpected error iterating exemplars: %s", err)
++				return
++			}
++		}
++	}()
++
++	appendWg.Wait()
++	close(done)
++	bgWg.Wait()
++
++	res, err := es.Select(0, math.MaxInt64, nameMatcher)
++	require.NoError(t, err)
++	requireOrdered(res)
++
++	stored := 0
++	for _, qr := range res {
++		stored += len(qr.Exemplars)
++	}
++	require.NotZero(t, stored)
++	require.LessOrEqual(t, stored, len(es.exemplars), "more exemplars retained than the buffer can hold")
++}

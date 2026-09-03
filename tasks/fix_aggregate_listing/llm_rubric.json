@@ -1,0 +1,6 @@
+[
+  {"id": "on_ticket",           "requirement": "The change stays on-ticket: refactoring that supports the fix (extracting helpers, restructuring the touched code paths) is fine, but there are no unrelated drive-by edits - no changes to files or behaviours the ticket does not touch, no opportunistic cleanup elsewhere", "weight": 0.0125},
+  {"id": "codebase_idioms",     "requirement": "The change follows the codebase's existing idioms: Effect combinators, tagged error types, naming, biome style", "weight": 0.0125},
+  {"id": "no_new_public_api",   "requirement": "The change introduces no new public API surface and keeps existing public shapes intact", "weight": 0.0125},
+  {"id": "release_bookkeeping", "requirement": "The submission includes the release bookkeeping this repo requires for a user-facing change: a changeset entry and/or a consistent version bump", "weight": 0.0125}
+]

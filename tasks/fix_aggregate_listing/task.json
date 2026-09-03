@@ -1,0 +1,5 @@
+{
+  "slug": "fix_aggregate_listing",
+  "description": "effect-dynamodb: aggregate listing is slow and pages inconsistently (Justin Menga)",
+  "codebase": {"repo_url": "https://github.com/jmenga/effect-dynamodb", "sha": "ccc3ced19424414f0ca0fc6632e5526889ce7d6a"}
+}

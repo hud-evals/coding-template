@@ -4,15 +4,18 @@ The env publishes one ``ssh`` workspace over a git repo; the agent's harness
 brings its own bash/file tools. Task setup vaults the repo's real history
 (:mod:`coding.repo`) so the agent gets a fresh single-commit repo with working
 git but no answer-key refs; grading captures the agent's changes as a diff,
-resets to the pre-agent snapshot, re-applies, brings in the hidden tests, and
-runs them.
+resets to the pre-agent snapshot, re-applies, and runs the graders.
 
-Three task templates:
+Four task templates:
 
+- ``swe-task`` — one image serves every task. Everything task-specific
+  arrives as uploads: the codebase zip, the grading zip (``run_grading.sh``,
+  ``criteria.json``, hidden tests, optional ``setup.sh`` / ``services.sh``),
+  an optional ``gold.diff`` and an optional ``llm_rubric.json``. New tasks
+  are new uploads; nothing is rebuilt or redeployed.
 - ``coding-task`` — hidden tests live as refs in the repo's vaulted history
   (the ``{task}_baseline`` / ``{task}_test`` / ``{task}_golden`` branch
-  convention) and a shell command scores by exit code. Runs locally (clones
-  ``REPO_URL`` per process) or from an image that bakes the repo.
+  convention) and a shell command scores by exit code.
 - ``sdlc-task`` — adds workflow: a bare mock-GitHub remote the agent pushes
   to, ``github_*`` issue/PR tools (:mod:`coding.github`), and grading over
   the pushed pull-request branch instead of the worktree.
@@ -21,9 +24,8 @@ Three task templates:
   (:mod:`coding.swe_bench_pro`).
 
 Images set ``REPO_DIR``; locally everything lives in per-process temp dirs.
-The vault and instance assets sit outside the workspace — under ``/hud``
-(root, mode 700) in images — and agent shells drop to a non-root uid, so only
-the env process can read them.
+Everything answer-key-shaped sits under ``/hud`` (root, mode 700) and agent
+shells drop to a non-root uid, so only the env process can read it.
 """
 
 from __future__ import annotations
@@ -31,37 +33,54 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import shutil
+import signal
 import tempfile
+import warnings
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from hud.environment import Environment, Workspace
 from hud.graders import BashGrader, EvaluationResult, LLMJudgeGrader, SubScore, combine
 from hud.settings import settings
+from pydantic import Field, TypeAdapter
 
+from coding import judge as judge_lib
 from coding import repo as repo_lib
 from coding import swe_bench_pro as swe
 from coding.github import MockGitHub
 from coding.github import serve as serve_github
+from coding.uploads import (
+    CriterionRow,
+    DataFileError,
+    DataFileRef,
+    RubricRow,
+    criterion_id,
+    load_criteria,
+    load_rubric,
+    stage,
+)
 
 logger = logging.getLogger(__name__)
 
 # ─── substrate layout ────────────────────────────────────────────────────
-# Images set REPO_DIR (and ship the repo); locally everything lives in
-# per-process temp dirs and the repo is cloned from REPO_URL at startup.
+# Images set REPO_DIR (an empty /workspace/repo the task fills); locally
+# everything lives in per-process temp dirs.
 
 _explicit_repo = os.environ.get("REPO_DIR")
 if _explicit_repo:
     REPO_DIR = Path(_explicit_repo)
     VAULT_DIR = Path(os.environ.get("VAULT_DIR", "/hud/vault"))
     LOGS_DIR = Path(os.environ.get("GRADING_LOGS_DIR", "/hud/logs"))
+    GRADER_DIR = Path(os.environ.get("GRADER_DIR", "/hud/grader"))
     _LOCAL_SUBSTRATE = False
 else:
     _LOCAL_ROOT = Path(tempfile.gettempdir()) / "hud-coding"
     REPO_DIR = _LOCAL_ROOT / f"repo-{os.getpid()}"
     VAULT_DIR = _LOCAL_ROOT / f"vault-{os.getpid()}"
     LOGS_DIR = _LOCAL_ROOT / f"logs-{os.getpid()}"
+    GRADER_DIR = _LOCAL_ROOT / f"grader-{os.getpid()}"
     _LOCAL_SUBSTRATE = True
 
 # The SDLC flavor's mock-GitHub remote: a bare repo the agent pushes to. It
@@ -72,8 +91,11 @@ REMOTE_DIR = (
     else _LOCAL_ROOT / f"remote-{os.getpid()}" / "project.git"
 )
 
-REPO_URL = os.environ.get("REPO_URL", "https://github.com/hud-evals/coding-template-sample")
+# The git-ref flavors' substrate. Only cloned when set: swe-task fills the
+# workspace from its own uploaded zip, so the default is an empty repo dir.
+REPO_URL = os.environ.get("REPO_URL")
 TESTS_TIMEOUT = float(os.environ.get("GRADING_TIMEOUT", "3600"))
+SETUP_TIMEOUT = float(os.environ.get("SETUP_TIMEOUT", "1800"))
 
 INSTANCE_DIR = Path(os.environ.get("INSTANCE_DIR", "/hud/instance"))
 
@@ -88,31 +110,52 @@ env = Environment(name="swe-task-example")
 # edit the repo but never read the answer key. No-op off root (local).
 # (Requires hud>=0.6.12.dev0: earlier shell_uid recursively chowned the whole
 # workspace on the serving path, missing the deploy readiness probe.)
+_AGENT_ENV = {"HOME": str(AGENT_HOME)}
+if not _LOCAL_SUBSTRATE:
+    # The image's toolchains and the Go layout the agent must use: the shared
+    # module cache read-only, its own (pre-warmed) build cache in its home.
+    _AGENT_ENV.update(
+        PATH=os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        GOPATH=os.environ.get("GOPATH", "/go"),
+        GOMODCACHE=os.environ.get("GOMODCACHE", "/go/pkg/mod"),
+        GOCACHE=str(AGENT_HOME / ".cache" / "go-build"),
+        GOTOOLCHAIN="local",
+        GOFLAGS="-mod=mod",
+        CGO_ENABLED="1",
+    )
 _ws = Workspace(
     REPO_DIR,
     guest_path=str(REPO_DIR),
     network=True,
-    env={"HOME": str(AGENT_HOME)},
+    env=_AGENT_ENV,
     track_files=settings.file_tracking_enabled,
     shell_uid=AGENT_UID,
 )
 
 SDLC_TOOLS = os.environ.get("SDLC_TOOLS", "") not in ("", "0", "false")
 
-WORKSPACE_NOTE = (
-    f"Please make your changes directly in {REPO_DIR}, not in a copy or a "
-    "separate worktree."
-)
+WORKSPACE_NOTE = f"Please make your changes directly in {REPO_DIR}, not in a copy or a separate worktree."
 
 _github = MockGitHub()
 _github_server: asyncio.Task[None] | None = None
+# Process groups started by a task's services.sh; killed at grade and shutdown.
+_service_pgids: list[int] = []
+
+
+def _stop_services() -> None:
+    for pgid in _service_pgids:
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+    _service_pgids.clear()
 
 
 @env.initialize
 async def _up() -> None:
     global _github_server
-    if _LOCAL_SUBSTRATE and not (REPO_DIR / ".git").exists():
-        REPO_DIR.parent.mkdir(parents=True, exist_ok=True)
+    REPO_DIR.mkdir(parents=True, exist_ok=True)
+    if _LOCAL_SUBSTRATE and REPO_URL and not (REPO_DIR / ".git").exists():
         logger.info("cloning %s into %s", REPO_URL, REPO_DIR)
         await repo_lib.run("git", "clone", "-q", REPO_URL, str(REPO_DIR), cwd=REPO_DIR.parent)
     await _ws.start()
@@ -130,15 +173,20 @@ async def _up() -> None:
 
 @env.shutdown
 async def _down() -> None:
+    _stop_services()
     if _github_server is not None:
         _github_server.cancel()
     await _ws.stop()
     if _LOCAL_SUBSTRATE:
-        for path in (REPO_DIR, VAULT_DIR, LOGS_DIR, REMOTE_DIR.parent):
+        for path in (REPO_DIR, VAULT_DIR, LOGS_DIR, GRADER_DIR, REMOTE_DIR.parent):
             shutil.rmtree(path, ignore_errors=True)
 
 
 # ─── shared task lifecycle ───────────────────────────────────────────────
+
+
+def _is_root() -> bool:
+    return hasattr(os, "geteuid") and os.geteuid() == 0
 
 
 async def _setup(base_ref: str | None = None, *, remote: bool = False) -> None:
@@ -156,17 +204,483 @@ async def _setup(base_ref: str | None = None, *, remote: bool = False) -> None:
     await repo_lib.vault_history(REPO_DIR, VAULT_DIR)
     if remote:
         await repo_lib.attach_to_remote(REPO_DIR, REMOTE_DIR)
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
+    if _is_root():
         AGENT_HOME.mkdir(parents=True, exist_ok=True)
         uid = f"{AGENT_UID}:{AGENT_UID}"
         paths = [str(REPO_DIR), str(AGENT_HOME)] + ([str(REMOTE_DIR)] if remote else [])
-        await repo_lib.run("chown", "-R", uid, *paths, cwd=Path("/"))
+        await repo_lib.run("chown", "-R", uid, *paths, cwd=Path("/"), timeout=1200.0)
         if remote:
             # The grader (root) pushes to and clones from the agent-owned remote.
             await repo_lib.run("git", "config", "--global", "--add", "safe.directory", str(REMOTE_DIR), cwd=Path("/"))
 
 
-# ─── generic flavor ──────────────────────────────────────────────────────
+# Text box in the console instead of a quoted JSON string. The git-ref
+# flavors keep the name ``description`` so existing Toptal rows keep working.
+Prompt = Annotated[str, Field(json_schema_extra={"x-hud-hint": "prompt"})]
+# One uploaded file each, in the console's data-file picker shape (a list, as
+# mc-bench's attachments; exactly one item here). The hint sits on the
+# property itself, not inside anyOf, so an optional upload gets the picker too.
+_PICKER = {"x-hud-hint": "data-files"}
+Upload = Annotated[list[DataFileRef], Field(min_length=1, max_length=1, json_schema_extra=_PICKER)]
+OptionalUpload = Annotated[list[DataFileRef] | None, Field(json_schema_extra=_PICKER)]
+# A row may also carry the bare file id or the object; the models are applied here.
+_UPLOAD = TypeAdapter(str | DataFileRef | list[DataFileRef])
+
+# ─── swe-task: everything task-specific arrives as uploads ───────────────
+
+GRADER_SCRIPT = "run_grading.sh"
+GOLD_FILE = "gold.diff"
+RUBRIC_FILE = "llm_rubric.json"
+# /hud/gold.diff and /hud/llm_rubric.json in images: next to the grading
+# pack, never in it, so the pack stays what a contributor zips up.
+HUD_ROOT = GRADER_DIR.parent
+GOLD_PATH = HUD_ROOT / GOLD_FILE
+RUBRIC_PATH = HUD_ROOT / RUBRIC_FILE
+# The uniform reward rule the swe-graders-v2 tasks converged on: monotone, no
+# floor, a failed gate leaves at most a fifth.
+BLOCKER_SCALE = 1.0 / 3.0
+GATE_SCALE = 0.2
+_SCORE_LINE = re.compile(r"^GRADER_SCORE\s+([0-9.]+)\s*$", re.M)
+
+
+class TaskSetupError(RuntimeError):
+    """A task could not be brought up; carries the fail-closed status."""
+
+    def __init__(self, status: str, **info: Any) -> None:
+        super().__init__(status)
+        self.status = status
+        self.info = info
+
+
+def _zero(status: str, **info: Any) -> EvaluationResult:
+    """A fail-closed result: a misconfigured or broken task scores 0, visibly."""
+    return EvaluationResult(
+        reward=0.0,
+        done=True,
+        content=f"status={status}",
+        info={"status": status, **info},
+        isError=status == "grader_error",
+    )
+
+
+def _upload(value: Any) -> DataFileRef | None:
+    if value is None:
+        return None
+    parsed = _UPLOAD.validate_python(value)
+    if isinstance(parsed, str):
+        return DataFileRef(file_id=parsed)
+    if isinstance(parsed, list):
+        if len(parsed) != 1:
+            raise ValueError(f"expected exactly one uploaded file, got {len(parsed)}")
+        return parsed[0]
+    return parsed
+
+
+def _task_env() -> dict[str, str]:
+    """What setup.sh, services.sh and run_grading.sh see on top of the image env."""
+    return {
+        **os.environ,
+        "REPO_DIR": str(REPO_DIR),
+        "GRADER_DIR": str(GRADER_DIR),
+        "GRADER_STATE_DIR": str(LOGS_DIR / "grading-state"),
+        "GRADING_LOGS_DIR": str(LOGS_DIR),
+        "AGENT_HOME": str(AGENT_HOME),
+        "HOME": os.environ.get("HOME") or "/root",
+    }
+
+
+async def _sh(
+    command: str, *, cwd: Path, timeout: float, log: Path | None = None, new_session: bool = False
+) -> tuple[int, str]:
+    """Run one bash command with the task env; returns (rc, combined output). 124 on timeout."""
+    proc = await asyncio.create_subprocess_exec(
+        "bash",
+        "-c",
+        command,
+        cwd=str(cwd),
+        env=_task_env(),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        start_new_session=new_session,
+    )
+    if new_session:
+        _service_pgids.append(proc.pid)
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        rc = proc.returncode if proc.returncode is not None else 1
+        text = out.decode("utf-8", "replace")
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        rc, text = 124, f"timed out after {timeout:.0f}s"
+    if log is not None:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a", encoding="utf-8") as handle:
+            handle.write(f"\n$ {command}\n{text}\n# exit {rc}\n")
+    return rc, text
+
+
+async def _stage_uploads(
+    codebase: DataFileRef, grading: DataFileRef, gold: DataFileRef | None, rubric: DataFileRef | None, key: str | None
+) -> None:
+    """Codebase into the (empty) workspace; everything else under /hud."""
+    REPO_DIR.mkdir(parents=True, exist_ok=True)
+    if any(REPO_DIR.iterdir()):
+        raise TaskSetupError("workspace_not_empty", path=str(REPO_DIR))
+    shutil.rmtree(GRADER_DIR, ignore_errors=True)
+    GRADER_DIR.mkdir(parents=True, mode=0o700)
+    for stale in (GOLD_PATH, RUBRIC_PATH):
+        stale.unlink(missing_ok=True)
+    try:
+        await stage(grading, GRADER_DIR, api_key=key)
+        if not (GRADER_DIR / GRADER_SCRIPT).is_file():
+            raise TaskSetupError("invalid_grading_pack", reason=f"{GRADER_SCRIPT} missing")
+        await stage(codebase, REPO_DIR, api_key=key)
+        if not any(REPO_DIR.iterdir()):
+            raise TaskSetupError("empty_codebase")
+        if gold is not None:
+            await stage(gold.model_copy(update={"path": GOLD_FILE}), HUD_ROOT, api_key=key, unpack=False)
+        if rubric is not None:
+            await stage(rubric.model_copy(update={"path": RUBRIC_FILE}), HUD_ROOT, api_key=key, unpack=False)
+    except DataFileError as exc:
+        raise TaskSetupError("upload_stage_failed", reason=str(exc)[:800]) from exc
+
+
+def setup_commands(repo: Path) -> list[str]:
+    """Lockfile auto-detection, for packs without a setup.sh.
+
+    A lockfile is the author's statement of the toolchain; a manifest alone
+    is not. Ecosystems can coexist (a Go repo with a web UI), so every match
+    contributes.
+    """
+    commands: list[str] = []
+    if (repo / "pnpm-lock.yaml").is_file():
+        commands.append("pnpm install --frozen-lockfile")
+    elif (repo / "package-lock.json").is_file():
+        commands.append("npm ci --no-audit --no-fund")
+    elif (repo / "yarn.lock").is_file():
+        commands.append("yarn install --frozen-lockfile")
+    if (repo / "go.mod").is_file():
+        commands.append("go mod download")
+    if (repo / "pyproject.toml").is_file():
+        commands.append("python3 -m venv .venv && .venv/bin/pip install -e .")
+    elif (repo / "requirements.txt").is_file():
+        commands.append("python3 -m venv .venv && .venv/bin/pip install -r requirements.txt")
+    return commands
+
+
+async def _prepare_repo() -> dict[str, Any]:
+    """Make the staged source a git repo, install its dependencies, snapshot it for the graders.
+
+    A zip with its ``.git`` inside keeps its history (vaulted at setup like
+    any other flavor); plain source gets one root commit. Setup runs as root
+    before the chown: ``setup.sh`` from the pack (the RUN lines the task's
+    Dockerfile used to have) or the lockfile auto-detection; a non-zero exit
+    fails the task closed. ``$GRADER_DIR/base`` is then the repo exactly as
+    the agent receives it (dependencies installed, no ``.git``) - the
+    pre-change tree for run_grading.sh and for the judge.
+    """
+    if not (REPO_DIR / ".git").exists():
+        await repo_lib.git(REPO_DIR, "init", "-q", "-b", "main", ".")
+        await repo_lib.git(REPO_DIR, "add", "-A")
+        await repo_lib.git(REPO_DIR, "commit", "-q", "--allow-empty", "-m", "baseline")
+    if _is_root():
+        await repo_lib.run("git", "config", "--global", "--add", "safe.directory", str(REPO_DIR), cwd=Path("/"))
+    _, sha, _ = await repo_lib.git(REPO_DIR, "rev-parse", "HEAD")
+    base_sha = sha.strip()
+
+    script = GRADER_DIR / "setup.sh"
+    mode, commands = ("script", [f"bash {script}"]) if script.is_file() else ("auto", setup_commands(REPO_DIR))
+    log = LOGS_DIR / "setup.log"
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + SETUP_TIMEOUT
+    for command in commands:
+        rc, out = await _sh(command, cwd=REPO_DIR, timeout=max(1.0, deadline - loop.time()), log=log)
+        if rc != 0:
+            raise TaskSetupError("setup_failed", mode=mode, command=command, exit_code=rc, log_tail=out[-3000:])
+
+    base = GRADER_DIR / "base"
+    shutil.rmtree(base, ignore_errors=True)
+    await repo_lib.run("cp", "-a", str(REPO_DIR), str(base), cwd=Path("/"), timeout=1200.0)
+    shutil.rmtree(base / ".git", ignore_errors=True)
+    (GRADER_DIR / "base_sha").write_text(base_sha + "\n", "utf-8")
+    return {"base_sha": base_sha, "setup": mode, "commands": commands}
+
+
+async def _lock_down() -> None:
+    """Root owns /hud at mode 700; the agent gets read access to the Go caches setup filled.
+
+    The module cache is shared read-only (the grader compiles against it too;
+    ``cache/lock`` is the one file Go opens read-write). A warm build cache is
+    copied into the agent's home so its first build is not cold.
+    """
+    if not _is_root():
+        return
+    await repo_lib.run("chown", "-R", "root:root", str(HUD_ROOT), cwd=Path("/"), timeout=1200.0)
+    for path in (HUD_ROOT, GRADER_DIR, LOGS_DIR, VAULT_DIR):
+        if path.exists():
+            path.chmod(0o700)
+    gopath = Path(os.environ.get("GOPATH", "/go"))
+    if gopath.is_dir():
+        await repo_lib.run("chmod", "-R", "a+rX", str(gopath), cwd=Path("/"), timeout=600.0)
+        lock = Path(os.environ.get("GOMODCACHE", str(gopath / "pkg" / "mod"))) / "cache" / "lock"
+        if lock.exists():
+            lock.chmod(0o666)
+    gocache = os.environ.get("GOCACHE")
+    if gocache and Path(gocache).is_dir() and any(Path(gocache).iterdir()):
+        agent_cache = AGENT_HOME / ".cache" / "go-build"
+        shutil.rmtree(agent_cache, ignore_errors=True)
+        agent_cache.parent.mkdir(parents=True, exist_ok=True)
+        await repo_lib.run("cp", "-a", gocache, str(agent_cache), cwd=Path("/"), timeout=1200.0)
+
+
+async def _start_services() -> None:
+    """services.sh must start its daemons and return once they answer."""
+    script = GRADER_DIR / "services.sh"
+    if not script.is_file():
+        return
+    rc, out = await _sh(
+        f"bash {script}", cwd=GRADER_DIR, timeout=300.0, log=LOGS_DIR / "services.log", new_session=True
+    )
+    if rc != 0:
+        raise TaskSetupError("services_failed", exit_code=rc, log_tail=out[-3000:])
+
+
+# ─── swe-task grading ────────────────────────────────────────────────────
+
+
+async def _bash_row(name: str, row: CriterionRow, setup_commit: str, diff: str) -> tuple[SubScore, bool]:
+    """``bash run_grading.sh <id>``: exit 0 is the verdict; GRADER_SCORE makes the value fractional."""
+    if row.pristine_paths:
+        # The baseline's own copies, so an edited assertion cannot buy a pass.
+        await repo_lib.git(REPO_DIR, "checkout", setup_commit, "--", *row.pristine_paths, check=False)
+    rc, out = await _sh(
+        f"bash {GRADER_DIR / GRADER_SCRIPT} {name}", cwd=REPO_DIR, timeout=row.timeout, log=LOGS_DIR / "grading.log"
+    )
+    if row.pristine_paths:
+        await repo_lib.reset_worktree(REPO_DIR, setup_commit)
+        await repo_lib.apply_diff(REPO_DIR, diff, LOGS_DIR / "patch.diff")
+    passed = rc == 0
+    value = 1.0 if passed else 0.0
+    if fractions := _SCORE_LINE.findall(out):
+        value = max(0.0, min(1.0, float(fractions[-1])))
+    info = {
+        "statement": row.statement,
+        "weight_points": row.weight,
+        "blocker": row.blocker,
+        "gate": row.gate,
+        "verdict": "PASS" if passed else "FAIL",
+        "exit_code": rc,
+        "output_tail": out[-2500:],
+    }
+    return SubScore(name=name, weight=row.weight, value=value, info=info), passed
+
+
+async def _judge_row(name: str, row: RubricRow, prompt: str, diff: str, inspector: judge_lib.Inspector) -> SubScore:
+    if row.tools or row.negative:
+        return await judge_lib.judge_row(
+            row, name=name, prompt=prompt, diff=diff, inspector=inspector if row.tools else None
+        )
+    # The cheap path: one native judge call over the summary (never the raw diff).
+    summary, _ = judge_lib.diff_summary(diff)
+    criteria = [row.statement] + ([f"Guidance for the reviewer: {row.guidance}"] if row.guidance else [])
+    try:
+        score = await LLMJudgeGrader.grade(
+            row.weight,
+            name=name,
+            answer=summary,
+            criteria=criteria,
+            question=f"Does this code change satisfy the following requirement? {row.statement}",
+            model=row.model or "claude-haiku-4-5",
+        )
+    except Exception as exc:  # noqa: BLE001 - fail closed at full weight
+        score = SubScore(
+            name=name, weight=row.weight, value=0.0, info={"judge_error": f"{type(exc).__name__}: {exc}"[:300]}
+        )
+    info = {**(score.info or {}), "statement": row.statement, "weight_points": row.weight, "judge": "diff-summary only"}
+    return score.model_copy(update={"info": info})
+
+
+async def _grade_swe(
+    validate_mode: str | None, criteria: list[CriterionRow], rubric: list[RubricRow], prompt: str
+) -> EvaluationResult:
+    setup_commit = await repo_lib.restore_history(REPO_DIR, VAULT_DIR)
+    if validate_mode is None:
+        diff = await repo_lib.capture_agent_diff(REPO_DIR, setup_commit)
+    else:
+        # "golden" grades the uploaded gold.diff; any other name is a probe
+        # diff shipped in the grading pack (maintainer calibration).
+        reference = GOLD_PATH if validate_mode == "golden" else GRADER_DIR / f"{validate_mode}.diff"
+        if not reference.is_file():
+            return _zero("missing_reference_diff", validate_mode=validate_mode)
+        diff = reference.read_text("utf-8")
+    if not diff.strip():
+        return EvaluationResult(reward=0.0, content="Empty diff: no changes were made.")
+    await repo_lib.reset_worktree(REPO_DIR, setup_commit)
+    apply_error = await repo_lib.apply_diff(REPO_DIR, diff, LOGS_DIR / "patch.diff")
+    if apply_error is not None:
+        return EvaluationResult(reward=0.0, content="patch failed to apply", info={"git_apply": apply_error})
+
+    # The judge reads a root-owned copy of the agent's final tree, taken
+    # before any grader touches the worktree, plus the pre-change tree.
+    snapshot = LOGS_DIR / "judge-snapshot"
+    inspector = None
+    if rubric:
+        shutil.rmtree(snapshot, ignore_errors=True)
+        await repo_lib.run("cp", "-a", str(REPO_DIR), str(snapshot), cwd=Path("/"), timeout=1200.0)
+        shutil.rmtree(snapshot / ".git", ignore_errors=True)
+        inspector = judge_lib.Inspector(snapshot, GRADER_DIR / "base", diff)
+
+    os.environ.update(
+        {
+            "SETUP_COMMIT": setup_commit,
+            "BASE_SHA": (GRADER_DIR / "base_sha").read_text().strip(),
+            "AGENT_DIFF": str(LOGS_DIR / "patch.diff"),
+        }
+    )
+    # The judge goes first: it reads the snapshot and $GRADER_DIR/base, and a
+    # grading script may sync the agent's sources into base for its own runs.
+    judged = [
+        await _judge_row(criterion_id(row, index), row, prompt, diff, inspector)  # type: ignore[arg-type]
+        for index, row in enumerate(rubric, start=1)
+    ]
+    named = [(criterion_id(row, index), row) for index, row in enumerate(criteria, start=1)]
+    # Gates first (the ticket's preconditions, before anything touched the
+    # tree), then the weighted rows in table order. Sequential: hidden suites
+    # are often timing-sensitive and share state under GRADER_STATE_DIR.
+    weighted: list[SubScore] = []
+    gates: list[SubScore] = []
+    failed_blockers: list[str] = []
+    failed_gates: list[str] = []
+    for name, row in sorted(named, key=lambda item: 0 if item[1].gate else 1):
+        score, passed = await _bash_row(name, row, setup_commit, diff)
+        if row.gate:
+            gates.append(score)
+            if not passed:
+                failed_gates.append(name)
+        else:
+            weighted.append(score)
+            if row.blocker and not passed:
+                failed_blockers.append(name)
+    weighted.extend(judged)
+
+    result = await combine(*weighted)
+    uncapped = result.reward
+    reward = uncapped * BLOCKER_SCALE if failed_blockers else uncapped
+    if failed_gates:
+        reward = min(reward, uncapped * GATE_SCALE)
+    reward = max(0.0, min(1.0, reward))
+
+    lines = [f"reward {reward:.3f} (uncapped {uncapped:.3f})"]
+    if failed_blockers:
+        lines.append(f"blockers failed ({', '.join(failed_blockers)}): reward = uncapped x {BLOCKER_SCALE:.3f}")
+    if failed_gates:
+        lines.append(f"gates failed ({', '.join(failed_gates)}): reward capped at uncapped x {GATE_SCALE:.1f}")
+    for score in gates:
+        lines.append(f"gate {score.name}: {(score.info or {}).get('verdict')}")
+    for score in weighted:
+        lines.append(f"{score.name}: {score.value:.3f} x {(score.info or {}).get('weight_points', score.weight):.2f}")
+    _, file_stats = judge_lib.diff_summary(diff)
+    info: dict[str, Any] = {
+        **(result.info or {}),
+        "uncapped_reward": uncapped,
+        "failed_blockers": failed_blockers,
+        "failed_gates": failed_gates,
+        "blocker_scale": BLOCKER_SCALE,
+        "gate_scale": GATE_SCALE,
+        "changed_files": file_stats[:200],
+    }
+    with warnings.catch_warnings():
+        # The reward is the capped weighted sum on purpose; the model warns when they differ.
+        warnings.simplefilter("ignore")
+        return EvaluationResult(
+            reward=reward, subscores=[*result.subscores, *gates], info=info, content="\n".join(lines)
+        )
+
+
+@env.template(
+    id="swe-task",
+    description="A coding task from uploads: the codebase zip, the grading zip "
+    "(run_grading.sh + criteria.json + tests, optional setup.sh/services.sh), "
+    "an optional gold.diff and an optional llm_rubric.json. Nothing is baked in.",
+)
+async def swe_task(
+    prompt: Prompt,
+    codebase: Upload,
+    grading: Upload,
+    golden_solution: OptionalUpload = None,
+    llm_rubric: OptionalUpload = None,
+    # Declaring this argument is what makes the platform deliver the key to a
+    # hosted run (the console hides it). It downloads the uploads and pays
+    # for the judge through the HUD gateway.
+    hud_api_key: str | None = None,
+    validate_mode: str | None = None,
+):
+    """One coding task; everything graded arrives in the uploads.
+
+    Stage the files, prepare the repo (``setup.sh`` from the grading pack,
+    else lockfile auto-detection), start ``services.sh`` if present, hand
+    the agent the prompt; then ``run_grading.sh <id>`` for every row of
+    ``criteria.json`` and one judge run per row of ``llm_rubric.json``,
+    combined into one result. ``validate_mode="golden"`` grades the uploaded
+    ``gold.diff`` instead of agent work.
+    """
+    if hud_api_key:
+        os.environ["HUD_API_KEY"] = hud_api_key
+        settings.api_key = hud_api_key
+    try:
+        codebase_ref, grading_ref = _upload(codebase), _upload(grading)
+        gold_ref, rubric_ref = _upload(golden_solution), _upload(llm_rubric)
+        if codebase_ref is None or grading_ref is None:
+            raise ValueError("codebase and grading uploads are required")
+        if validate_mode == "golden" and gold_ref is None:
+            raise ValueError('validate_mode="golden" needs a golden_solution upload')
+    except Exception as exc:  # noqa: BLE001 - fail closed: a misconfigured task scores 0
+        yield _zero("invalid_task_args", reason=str(exc)[:800])
+        return
+
+    setup_info: dict[str, Any] = {}
+    try:
+        await _stage_uploads(codebase_ref, grading_ref, gold_ref, rubric_ref, hud_api_key)
+        try:
+            criteria = load_criteria(GRADER_DIR)
+            rubric = load_rubric(RUBRIC_PATH) if rubric_ref is not None else []
+            names = [criterion_id(r, i) for i, r in enumerate(criteria, 1)] + [
+                criterion_id(r, i) for i, r in enumerate(rubric, 1)
+            ]
+            if len(set(names)) != len(names):
+                raise ValueError("criteria.json and llm_rubric.json share ids")
+        except Exception as exc:  # noqa: BLE001
+            raise TaskSetupError("invalid_grading_pack", reason=str(exc)[:800]) from exc
+        setup_info = await _prepare_repo()
+        await _lock_down()
+        await _setup()
+        await _start_services()
+    except TaskSetupError as exc:
+        _stop_services()
+        yield _zero(exc.status, **exc.info)
+        return
+    except Exception as exc:  # noqa: BLE001 - anything else is still a task that cannot run
+        _stop_services()
+        yield _zero("setup_error", reason=repr(exc)[:800])
+        return
+
+    if validate_mode is not None:
+        _ = yield "Validation run: no work is expected of you. Finish immediately."
+    else:
+        _ = yield f"{WORKSPACE_NOTE}\n\n{prompt}"
+
+    try:
+        result = await _grade_swe(validate_mode, criteria, rubric, prompt)
+    except Exception as exc:  # noqa: BLE001 - fail closed
+        result = _zero("grader_error", reason=repr(exc)[:800])
+    finally:
+        _stop_services()
+    result.info.setdefault("setup", setup_info)
+    yield result
+
+
+# ─── generic flavor (git refs in a baked or cloned repo) ─────────────────
 
 
 async def _grade_generic(
@@ -202,13 +716,14 @@ async def _grade_generic(
 
 @env.template(id="coding-task", description="Fix a bug in the repo; hidden tests grade the diff.")
 async def coding_task(
-    description: str,
+    description: Prompt,
     test_command: str,
     base_ref: str | None = None,
     test_ref: str | None = None,
     test_files: list[str] | None = None,
     golden_ref: str | None = None,
     validate_mode: str | None = None,
+    hud_api_key: str | None = None,
 ):
     """Generic coding task.
 
@@ -220,6 +735,7 @@ async def coding_task(
     """
     if validate_mode not in (None, "golden"):
         raise ValueError(f"unknown validate_mode: {validate_mode!r}")
+    _ = hud_api_key  # declared so hosted runs inject HUD_API_KEY; unused here
     await _setup(base_ref)
     _ = yield (
         f"You are working in a coding repository located at {REPO_DIR}. {WORKSPACE_NOTE}\n\n"
@@ -294,7 +810,7 @@ async def _grade_sdlc(
     description="Issue-driven bug fix: fix the code, push a branch, open a pull request.",
 )
 async def sdlc_task(
-    description: str,
+    description: Prompt,
     test_command: str,
     base_ref: str,
     test_ref: str,
@@ -303,6 +819,7 @@ async def sdlc_task(
     golden_ref: str | None = None,
     pr_rubric: str | None = None,
     validate_mode: str | None = None,
+    hud_api_key: str | None = None,
 ):
     """The generic flavor plus workflow: the repo has an ``origin`` remote (a
     bare mock-GitHub repo) and ``github_*`` tools seeded with *issues*; the
@@ -313,6 +830,8 @@ async def sdlc_task(
     """
     if validate_mode not in (None, "golden"):
         raise ValueError(f"unknown validate_mode: {validate_mode!r}")
+    if hud_api_key:
+        os.environ["HUD_API_KEY"] = hud_api_key
     _github.seed(issues or [])
     await _setup(base_ref, remote=True)
     _ = yield (

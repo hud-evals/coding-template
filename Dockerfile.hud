@@ -1,91 +1,118 @@
-# fix_aggregate_listing on the coding-template (rubric flavor).
+# The one swe-task image. Task-agnostic: no repository, no grader, no prompt is
+# baked in. Everything task-specific arrives as uploads at task setup, so a new
+# task never needs a build or a deploy. What the image does carry is every
+# toolchain the tasks so far needed, side by side:
 #
-# Substrate: effect-dynamodb at the pinned base SHA (history vaulted at task
-# setup by coding/repo.py), Node 24 + pnpm 10, DynamoDB Local sidecar, hud
-# serve. Everything answer-key-shaped lives under /hud (root, mode 700):
-# the vault, the hidden rubric grader, and gold.diff. Agent shells drop to
-# uid 1000 (setpriv), so /hud is unreadable from the agent side.
+#   Node 22 + Node 24 (+ pnpm 10)      use-node <22|24>   (default 24)
+#   Go 1.25 + Go 1.26                  use-go <1.25|1.26> (default 1.26)
+#   Python 3.12, a JRE + DynamoDB Local, SQLite 3.53.4 (library + CLI),
+#   git, ripgrep, util-linux (setpriv), build-essential.
+#
+# A task's grading/setup.sh picks its toolchain (`use-node 22`) and installs the
+# repo's dependencies; without one the env auto-detects from lockfiles.
+# Everything answer-key-shaped lives under /hud (root, mode 700): the vault,
+# the grading pack, gold.diff, llm_rubric.json. Agent shells drop to uid 1000.
 
-FROM node:24-bookworm
+FROM debian:bookworm-slim
 
-ARG REPO_URL=https://github.com/jmenga/effect-dynamodb
-ARG BASE_SHA=ccc3ced19424414f0ca0fc6632e5526889ce7d6a
+ARG NODE22=22.19.0
+ARG NODE24=24.8.0
+ARG GO125=1.25.1
+ARG GO126=1.26.2
+ARG SQLITE_YEAR=2026
+ARG SQLITE_AMALGAMATION=3530400
+ARG SQLITE_VERSION=3.53.4
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git curl ca-certificates \
-        default-jre-headless \
-        util-linux \
-        python3 python3-venv \
+        ca-certificates curl git xz-utils patch build-essential \
+        util-linux ripgrep default-jre-headless \
+        python3 python3-venv python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g pnpm@10
+# ── Node 22 and 24 under /opt/node/<major>; /usr/local/node points at the
+#    active one and is on PATH. use-node re-points it (one task per container).
+RUN set -eux; arch="$(dpkg --print-architecture)"; case "$arch" in amd64) n=x64 ;; arm64) n=arm64 ;; esac; \
+    for v in ${NODE22} ${NODE24}; do \
+      major="${v%%.*}"; mkdir -p "/opt/node/${major}"; \
+      curl -fsSL "https://nodejs.org/dist/v${v}/node-v${v}-linux-${n}.tar.xz" \
+        | tar -xJ -C "/opt/node/${major}" --strip-components=1; \
+    done; \
+    ln -s /opt/node/24 /usr/local/node; \
+    printf '#!/bin/sh\nset -e\n[ -d "/opt/node/$1" ] || { echo "no Node $1 (have: $(ls /opt/node))" >&2; exit 1; }\nln -sfn "/opt/node/$1" /usr/local/node\n' > /usr/local/bin/use-node; \
+    chmod 755 /usr/local/bin/use-node; \
+    for major in 22 24; do use-node "$major" && /usr/local/node/bin/npm install -g pnpm@10 >/dev/null; done; \
+    use-node 24
+ENV PATH="/usr/local/node/bin:${PATH}"
 
-# DynamoDB Local (started by env.py's initialize hook)
+# ── Go 1.25 and 1.26 under /opt/go/<minor>; /usr/local/go is the active one.
+RUN set -eux; arch="$(dpkg --print-architecture)"; \
+    for v in ${GO125} ${GO126}; do \
+      minor="${v%.*}"; mkdir -p "/opt/go/${minor}"; \
+      curl -fsSL "https://go.dev/dl/go${v}.linux-${arch}.tar.gz" | tar -xz -C "/opt/go/${minor}" --strip-components=1; \
+    done; \
+    ln -s /opt/go/1.26 /usr/local/go; \
+    printf '#!/bin/sh\nset -e\n[ -d "/opt/go/$1" ] || { echo "no Go $1 (have: $(ls /opt/go))" >&2; exit 1; }\nln -sfn "/opt/go/$1" /usr/local/go\n' > /usr/local/bin/use-go; \
+    chmod 755 /usr/local/bin/use-go
+# Shared module cache (read-only for the agent after setup) and a build cache
+# the env copies into the agent's home warm. GOTOOLCHAIN=local: never download
+# another Go at run time.
+ENV PATH="/usr/local/go/bin:${PATH}" \
+    GOPATH=/go GOMODCACHE=/go/pkg/mod GOCACHE=/gocache GOTOOLCHAIN=local GOFLAGS=-mod=mod CGO_ENABLED=1
+RUN mkdir -p /go /gocache && chmod -R 0777 /go /gocache \
+    && printf '%s\n' \
+      'case ":$PATH:" in *:/usr/local/go/bin:*) ;; *) PATH="/usr/local/go/bin:$PATH" ;; esac' \
+      'case ":$PATH:" in *:/usr/local/node/bin:*) ;; *) PATH="/usr/local/node/bin:$PATH" ;; esac' \
+      'export PATH' \
+      'if [ "$(id -u)" != "0" ]; then' \
+      '    : "${GOPATH:=/go}"; : "${GOMODCACHE:=/go/pkg/mod}"; : "${GOCACHE:=$HOME/.cache/go-build}"' \
+      '    : "${GOFLAGS:=-mod=mod}"; : "${GOTOOLCHAIN:=local}"; : "${CGO_ENABLED:=1}"' \
+      '    export GOPATH GOMODCACHE GOCACHE GOFLAGS GOTOOLCHAIN CGO_ENABLED' \
+      'fi' > /etc/profile.d/10-hud-toolchains.sh \
+    && chmod 0644 /etc/profile.d/10-hud-toolchains.sh \
+    && cat /etc/profile.d/10-hud-toolchains.sh >> /etc/bash.bashrc
+
+# ── DynamoDB Local (a task's services.sh starts it when it needs it).
 RUN mkdir -p /opt/dynamodb-local \
     && curl -fsSL https://s3.us-west-2.amazonaws.com/dynamodb-local/dynamodb_local_latest.tar.gz \
        | tar -xz -C /opt/dynamodb-local
 
+# ── SQLite ${SQLITE_VERSION}: the exact library and CLI the rqlite graders
+#    compare against (Debian's is older). Python's sqlite3 module picks up the
+#    shared library through LD_LIBRARY_PATH.
+RUN set -eux; cd /tmp; \
+    curl -fsSL "https://sqlite.org/${SQLITE_YEAR}/sqlite-autoconf-${SQLITE_AMALGAMATION}.tar.gz" -o sqlite.tar.gz; \
+    tar -xzf sqlite.tar.gz; cd "sqlite-autoconf-${SQLITE_AMALGAMATION}"; \
+    FLAGS="-O2 -DSQLITE_ENABLE_COLUMN_METADATA -DSQLITE_ENABLE_FTS3 -DSQLITE_ENABLE_FTS3_PARENTHESIS \
+           -DSQLITE_ENABLE_FTS4 -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_RTREE -DSQLITE_ENABLE_GEOPOLY \
+           -DSQLITE_ENABLE_JSON1 -DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_ENABLE_DBSTAT_VTAB \
+           -DSQLITE_ENABLE_UPDATE_DELETE_LIMIT -DSQLITE_ENABLE_PREUPDATE_HOOK -DSQLITE_ENABLE_SESSION \
+           -DSQLITE_THREADSAFE=1 -DHAVE_USLEEP=1"; \
+    gcc $FLAGS -fPIC -shared -Wl,-soname,libsqlite3.so.0 -o /usr/local/lib/libsqlite3.so.0.8.6 sqlite3.c -lm -lpthread -ldl; \
+    ln -sf libsqlite3.so.0.8.6 /usr/local/lib/libsqlite3.so.0; ln -sf libsqlite3.so.0.8.6 /usr/local/lib/libsqlite3.so; \
+    cp -f sqlite3.h sqlite3ext.h /usr/local/include/; \
+    cp -f /usr/local/lib/libsqlite3.so.0.8.6 "/usr/lib/$(gcc -print-multiarch)/libsqlite3.so.0.8.6"; \
+    gcc $FLAGS -o /usr/local/bin/sqlite3 shell.c sqlite3.c -lm -lpthread -ldl; \
+    ldconfig; cd /tmp && rm -rf "sqlite-autoconf-${SQLITE_AMALGAMATION}" sqlite.tar.gz
+ENV LD_LIBRARY_PATH=/usr/local/lib GRADER_SQLITE3=/usr/local/bin/sqlite3
+
+# ── hud, in its own venv (never the agent's), and this environment.
 RUN python3 -m venv /opt/hudvenv \
-    && /opt/hudvenv/bin/pip install --no-cache-dir "hud==0.6.13"
+    && /opt/hudvenv/bin/pip install --no-cache-dir "hud==0.6.13" "httpx>=0.27" \
+    && /opt/hudvenv/bin/python -c "import sqlite3; assert sqlite3.sqlite_version == '${SQLITE_VERSION}', sqlite3.sqlite_version"
 ENV PATH="/opt/hudvenv/bin:${PATH}"
 
-# Substrate repo at the pinned base commit. History is truncated here and
-# additionally vaulted at task setup (coding/repo.py), so the agent gets a
-# fresh single-commit repo with working git and no refs to mine.
-RUN mkdir -p /workspace \
-    && git init -q /workspace/repo \
-    && cd /workspace/repo \
-    && git remote add origin ${REPO_URL} \
-    && git fetch --depth 1 origin ${BASE_SHA} \
-    && git checkout -q FETCH_HEAD \
-    && git checkout -q -b main \
-    && git config --system user.email "dev@localhost" \
-    && git config --system user.name "dev" \
-    # the repo gets chowned to the agent uid below; root (build steps and the
-    # grading process) must still be allowed to run git in it
-    && git config --system --add safe.directory /workspace/repo
+RUN git config --system user.email "dev@localhost" && git config --system user.name "dev" \
+    && mkdir -p /workspace/repo /hud/vault /hud/logs /hud/grader \
+    && chown -R root:root /hud && chmod -R 700 /hud
 
-# chown in the same RUN as the install ("chown what you stage" — the SDK's
-# shell_uid no longer recurses at boot, so baked trees must be agent-owned
-# at build time; task setup's chown -R then only touches per-task mutations).
-RUN cd /workspace/repo \
-    && pnpm install --frozen-lockfile \
-    && pnpm --filter @effect-dynamodb/schema build \
-    && pnpm --filter effect-dynamodb build \
-    && pnpm --filter @effect-dynamodb/geo build \
-    && chown -R 1000:1000 /workspace/repo
-
-# ── /hud: everything the agent must never read (mode 700, root) ──────────
-# hidden rubric grader + pristine copies + grader-owned runner tree + gold
-COPY task/grader/ /hud/grader/
-COPY task/gold.diff /hud/gold.diff
-RUN mkdir -p /hud/grader/pristine /hud/vault /hud/logs \
-    && cp -r /workspace/repo/packages/effect-dynamodb/src /hud/grader/pristine/src \
-    && cp -r /workspace/repo/packages/effect-dynamodb/test /hud/grader/pristine/test \
-    && cp /workspace/repo/packages/effect-dynamodb/vitest.config.ts \
-          /workspace/repo/packages/effect-dynamodb/vitest.connected.ts \
-          /hud/grader/pristine/ \
-    && git -C /workspace/repo rev-parse HEAD > /hud/grader/base_sha \
-    && cp -a /workspace/repo /hud/grader/runner \
-    && rm -rf /hud/grader/runner/.git /hud/grader/runner/.hud \
-    # cp -a preserved the agent uid from the chowned repo; the runner is
-    # grader-owned and must be root's
-    && chown -R root:root /hud \
-    && chmod -R 700 /hud
-
-# Template runtime layout
+# Template runtime layout: an empty workspace the task fills.
 ENV REPO_DIR=/workspace/repo \
     VAULT_DIR=/hud/vault \
     GRADING_LOGS_DIR=/hud/logs \
-    GOLD_DIFF=/hud/gold.diff \
     GRADER_DIR=/hud/grader
 
 WORKDIR /app
 COPY coding/ /app/coding/
-COPY env.py tasks.py /app/
-COPY task/prompt.md /app/task/prompt.md
-RUN chmod 600 /app/tasks.py
+COPY env.py /app/
 
-# Serve tasks.py: it imports the template's Environment (env.py) untouched and
-# registers the rubric-task flavor + this task on top of it.
-CMD ["hud", "serve", "tasks.py", "--host", "0.0.0.0"]
+CMD ["hud", "serve", "env.py", "--host", "0.0.0.0"]

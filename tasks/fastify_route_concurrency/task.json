@@ -1,0 +1,5 @@
+{
+  "slug": "fastify_route_concurrency",
+  "description": "Fastify: per-route concurrency limit with a bounded FIFO queue (concurrency / queueLimit / queueTimeout)",
+  "codebase": {"repo_url": "https://github.com/fastify/fastify", "sha": "7d196a998c422062a3aaa3f8041db91ad576cea0"}
+}

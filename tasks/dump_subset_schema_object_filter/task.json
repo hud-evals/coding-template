@@ -1,0 +1,5 @@
+{
+  "slug": "dump_subset_schema_object_filter",
+  "description": "rqlite: db.Dump of a schema-object subset must restore exactly (dependency closure, broken originals, request shapes)",
+  "codebase": {"repo_url": "https://github.com/rqlite/rqlite", "sha": "b3d61e13d098032f45ac14f30f25cdab1336f31c"}
+}

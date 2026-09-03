@@ -1,0 +1,695 @@
+diff --git a/docs/Reference/Errors.md b/docs/Reference/Errors.md
+index f239b29..74452de 100644
+--- a/docs/Reference/Errors.md
++++ b/docs/Reference/Errors.md
+@@ -443,6 +443,9 @@ Below is a table with all the error codes used by Fastify.
+ | <a id="fst_err_route_body_limit_option_not_int">FST_ERR_ROUTE_BODY_LIMIT_OPTION_NOT_INT</a> | `bodyLimit` option must be an integer. | Use an integer for the `bodyLimit` option. | [#4554](https://github.com/fastify/fastify/pull/4554) |
+ | <a id="fst_err_handler_timeout">FST_ERR_HANDLER_TIMEOUT</a> | Request timed out. | Increase the `handlerTimeout` option or optimize the handler. | - |
+ | <a id="fst_err_route_handler_timeout_option_not_int">FST_ERR_ROUTE_HANDLER_TIMEOUT_OPTION_NOT_INT</a> | `handlerTimeout` option must be a positive integer. | Use a positive integer for the `handlerTimeout` option. | - |
++| <a id="fst_err_route_concurrency_option_invalid">FST_ERR_ROUTE_CONCURRENCY_OPTION_INVALID</a> | The route `concurrency` option or one of its fields is invalid. | Use a positive integer `max`, a non-negative integer `queueLimit`, and a positive integer `queueTimeout`. | - |
++| <a id="fst_err_route_concurrency_queue_full">FST_ERR_ROUTE_CONCURRENCY_QUEUE_FULL</a> | The route concurrency queue is full. | Increase `max` or `queueLimit`, or reduce request duration. | - |
++| <a id="fst_err_route_concurrency_queue_timeout">FST_ERR_ROUTE_CONCURRENCY_QUEUE_TIMEOUT</a> | A request exceeded the route concurrency queue timeout. | Increase `queueTimeout`, increase `max`, or reduce request duration. | - |
+ | <a id="fst_err_route_rewrite_not_str">FST_ERR_ROUTE_REWRITE_NOT_STR</a> | `rewriteUrl` needs to be of type `string`. | Use a string for the `rewriteUrl`. | [#4554](https://github.com/fastify/fastify/pull/4554) |
+ | <a id="fst_err_route_missing_content_type">FST_ERR_ROUTE_MISSING_CONTENT_TYPE</a> | `Content-Type` header is required for the request. | Send request with `Content-Type` header. | [#6832](https://github.com/fastify/fastify/pull/6832) |
+ | <a id="fst_err_route_missing_content">FST_ERR_ROUTE_MISSING_CONTENT</a> | Body is required for the request. | Send request with payload. | [#6832](https://github.com/fastify/fastify/pull/6832) |
+diff --git a/docs/Reference/Routes.md b/docs/Reference/Routes.md
+index 2045e55..3fb8fcc 100644
+--- a/docs/Reference/Routes.md
++++ b/docs/Reference/Routes.md
+@@ -120,6 +120,21 @@ fastify.route(options)
+   [`handlerTimeout`](./Server.md#factory-handler-timeout). Must be a positive
+   integer. When the timeout fires, `request.signal` is aborted and a 503 error
+   is sent through the error handler (which can be customized per-route).
++* `concurrency`: limits the number of requests executing this route. It accepts:
++  * `max` (required): positive integer number of admitted requests.
++  * `queueLimit` (optional): non-negative integer number of waiting requests;
++    defaults to `0`. A request arriving when this queue is full receives a 503
++    `FST_ERR_ROUTE_CONCURRENCY_QUEUE_FULL` error.
++  * `queueTimeout` (optional): positive integer maximum wait in milliseconds;
++    defaults to `30000`. An expired queued request receives a 503
++    `FST_ERR_ROUTE_CONCURRENCY_QUEUE_TIMEOUT` error.
++
++  Admission is FIFO and happens before `onRequest` hooks and body parsing.
++  Queue waiting is not included in `handlerTimeout`. Slots remain occupied for
++  the complete response lifecycle and are released on completion, errors,
++  streaming or hijacked-response completion, handler timeout, and client
++  disconnect. Each configured route has independent admission state; routes
++  without this option keep the normal request path.
+ * `logLevel`: set log level for this route. See below.
+ * `logSerializers`: set serializers to log for this route.
+ * `config`: object used to store custom configuration.
+diff --git a/lib/context.js b/lib/context.js
+index 1cca862..514b8d3 100644
+--- a/lib/context.js
++++ b/lib/context.js
+@@ -16,6 +16,7 @@ const {
+   kReplyCacheSerializeFns,
+   kHandlerTimeout
+ } = require('./symbols.js')
++const RouteConcurrency = require('./route-concurrency.js')
+ 
+ // Object that holds the context of every request
+ // Every route holds an instance of this object.
+@@ -37,7 +38,8 @@ function Context ({
+   prefixTrailingSlash,
+   server,
+   isFastify,
+-  handlerTimeout
++  handlerTimeout,
++  concurrency
+ }) {
+   this.schema = schema
+   this.handler = handler
+@@ -78,6 +80,7 @@ function Context ({
+   this.serializerCompiler = serializerCompiler || null
+ 
+   this.handlerTimeout = handlerTimeout || server[kHandlerTimeout] || 0
++  this.concurrency = concurrency === undefined ? null : new RouteConcurrency(concurrency)
+   this.server = server
+ }
+ 
+diff --git a/lib/errors.js b/lib/errors.js
+index 11214ea..5b40f7f 100644
+--- a/lib/errors.js
++++ b/lib/errors.js
+@@ -449,6 +449,22 @@ const codes = {
+     500,
+     TypeError
+   ),
++  FST_ERR_ROUTE_CONCURRENCY_OPTION_INVALID: createError(
++    'FST_ERR_ROUTE_CONCURRENCY_OPTION_INVALID',
++    "Invalid 'concurrency' option: %s",
++    500,
++    TypeError
++  ),
++  FST_ERR_ROUTE_CONCURRENCY_QUEUE_FULL: createError(
++    'FST_ERR_ROUTE_CONCURRENCY_QUEUE_FULL',
++    "Concurrency queue is full for route '%s'",
++    503
++  ),
++  FST_ERR_ROUTE_CONCURRENCY_QUEUE_TIMEOUT: createError(
++    'FST_ERR_ROUTE_CONCURRENCY_QUEUE_TIMEOUT',
++    "Request exceeded the %s ms concurrency queue timeout for route '%s'",
++    503
++  ),
+   FST_ERR_ROUTE_REWRITE_NOT_STR: createError(
+     'FST_ERR_ROUTE_REWRITE_NOT_STR',
+     'Rewrite url for "%s" needs to be of type "string" but received "%s"',
+diff --git a/lib/plugin-override.js b/lib/plugin-override.js
+index 8f01b08..c9368da 100644
+--- a/lib/plugin-override.js
++++ b/lib/plugin-override.js
+@@ -13,7 +13,8 @@ const {
+   kRequest,
+   kFourOhFour,
+   kPluginNameChain,
+-  kErrorHandlerAlreadySet
++  kErrorHandlerAlreadySet,
++  kRouteConcurrency
+ } = require('./symbols.js')
+ 
+ const Reply = require('./reply')
+@@ -59,6 +60,7 @@ module.exports = function override (old, fn, opts) {
+   // When an non-encapsulated plugin is added, the chain will be updated.
+   instance[kPluginNameChain] = [fnName]
+   instance[kErrorHandlerAlreadySet] = false
++  instance[kRouteConcurrency] = opts.concurrency !== undefined ? opts.concurrency : old[kRouteConcurrency]
+ 
+   if (instance[kLogSerializers] || opts.logSerializers) {
+     instance[kLogSerializers] = Object.assign(Object.create(instance[kLogSerializers]), opts.logSerializers)
+diff --git a/lib/request.js b/lib/request.js
+index c20ad1a..629d6fb 100644
+--- a/lib/request.js
++++ b/lib/request.js
+@@ -192,6 +192,13 @@ Object.defineProperties(Request.prototype, {
+         url: context.config?.url,
+         bodyLimit: (routeLimit || serverLimit),
+         handlerTimeout: context.handlerTimeout,
++        concurrency: context.concurrency == null
++          ? undefined
++          : Object.freeze({
++            max: context.concurrency.max,
++            queueLimit: context.concurrency.queueLimit,
++            queueTimeout: context.concurrency.queueTimeout
++          }),
+         attachValidation: context.attachValidation,
+         logLevel: context.logLevel,
+         exposeHeadRoute: context.exposeHeadRoute,
+diff --git a/lib/route-concurrency.js b/lib/route-concurrency.js
+new file mode 100644
+index 0000000..9f5d4c0
+--- /dev/null
++++ b/lib/route-concurrency.js
+@@ -0,0 +1,87 @@
++'use strict'
++
++const {
++  FST_ERR_ROUTE_CONCURRENCY_QUEUE_FULL,
++  FST_ERR_ROUTE_CONCURRENCY_QUEUE_TIMEOUT
++} = require('./errors')
++const { kReplyIsError } = require('./symbols.js')
++
++// Per-route admission state. One instance per Context (route); routes without
++// the option never construct one and keep the original fast path.
++class RouteConcurrency {
++  constructor ({ max, queueLimit, queueTimeout }) {
++    this.max = max
++    this.queueLimit = queueLimit
++    this.queueTimeout = queueTimeout
++    this.active = 0
++    this.queue = []
++  }
++
++  admit (request, reply, run) {
++    if (this.active < this.max) {
++      this._start(request, reply, run)
++      return
++    }
++
++    if (this.queue.length >= this.queueLimit) {
++      rejectWith(reply, new FST_ERR_ROUTE_CONCURRENCY_QUEUE_FULL(request.url))
++      return
++    }
++
++    const entry = { request, reply, run, timer: null, onClose: null }
++    entry.timer = setTimeout(() => {
++      this._dequeue(entry)
++      rejectWith(reply, new FST_ERR_ROUTE_CONCURRENCY_QUEUE_TIMEOUT(this.queueTimeout, request.url))
++    }, this.queueTimeout)
++    // A queued client that goes away is dropped without ever taking a slot.
++    entry.onClose = () => { this._dequeue(entry) }
++    request.raw.on('close', entry.onClose)
++    this.queue.push(entry)
++  }
++
++  _dequeue (entry) {
++    const index = this.queue.indexOf(entry)
++    if (index === -1) return false
++    this.queue.splice(index, 1)
++    clearTimeout(entry.timer)
++    entry.request.raw.removeListener('close', entry.onClose)
++    return true
++  }
++
++  _start (request, reply, run) {
++    this.active++
++    const res = reply.raw
++    let released = false
++    const release = () => {
++      if (released) return
++      released = true
++      res.removeListener('finish', release)
++      res.removeListener('close', release)
++      res.removeListener('error', release)
++      this.active--
++      this._drain()
++    }
++    // 'finish' covers normal completion, 'close' covers client disconnect
++    // mid-stream (including hijacked replies) and 'error' covers write errors.
++    res.on('finish', release)
++    res.on('close', release)
++    res.on('error', release)
++    run()
++  }
++
++  _drain () {
++    while (this.active < this.max && this.queue.length > 0) {
++      const entry = this.queue.shift()
++      clearTimeout(entry.timer)
++      entry.request.raw.removeListener('close', entry.onClose)
++      this._start(entry.request, entry.reply, entry.run)
++    }
++  }
++}
++
++function rejectWith (reply, error) {
++  reply[kReplyIsError] = true
++  reply.send(error)
++}
++
++module.exports = RouteConcurrency
+diff --git a/lib/route.js b/lib/route.js
+index 4cbdb69..e38a8b9 100644
+--- a/lib/route.js
++++ b/lib/route.js
+@@ -28,6 +28,7 @@ const {
+   FST_ERR_ROUTE_BODY_VALIDATION_SCHEMA_NOT_SUPPORTED,
+   FST_ERR_ROUTE_BODY_LIMIT_OPTION_NOT_INT,
+   FST_ERR_ROUTE_HANDLER_TIMEOUT_OPTION_NOT_INT,
++  FST_ERR_ROUTE_CONCURRENCY_OPTION_INVALID,
+   FST_ERR_HANDLER_TIMEOUT,
+   FST_ERR_HOOK_INVALID_ASYNC_HANDLER
+ } = require('./errors')
+@@ -52,7 +53,8 @@ const {
+   kRequestSignal,
+   kTimeoutTimer,
+   kOnAbort,
+-  kLogController
++  kLogController,
++  kRouteConcurrency
+ } = require('./symbols.js')
+ const { buildErrorHandler } = require('./error-handler')
+ const { createChildLogger, defaultChildLoggerFactory } = require('./logger-factory.js')
+@@ -219,6 +221,8 @@ function buildRouting (options) {
+ 
+     validateBodyLimitOption(opts.bodyLimit)
+     validateHandlerTimeoutOption(opts.handlerTimeout)
++    const concurrencyOption = opts.concurrency !== undefined ? opts.concurrency : this[kRouteConcurrency]
++    opts.concurrency = validateConcurrencyOption(concurrencyOption)
+ 
+     const shouldExposeHead = opts.exposeHeadRoute ?? globalExposeHeadRoutes
+ 
+@@ -351,7 +355,8 @@ function buildRouting (options) {
+         prefixTrailingSlash: (opts.prefixTrailingSlash || 'both'),
+         server: this,
+         isFastify,
+-        handlerTimeout: opts.handlerTimeout
++        handlerTimeout: opts.handlerTimeout,
++        concurrency: opts.concurrency
+       })
+ 
+       const headHandler = router.findRoute('HEAD', opts.url, constraints)
+@@ -522,64 +527,73 @@ function buildRouting (options) {
+ 
+     context.server[kLogController].incomingRequest(request, reply)
+ 
++    if (context.concurrency != null) {
++      setupResponseListeners(reply)
++      context.concurrency.admit(request, reply, runRouteLifecycle)
++    } else {
++      runRouteLifecycle()
++    }
++
++    function runRouteLifecycle () {
+     // Handler timeout setup — only when configured (zero overhead otherwise)
+-    const handlerTimeout = context.handlerTimeout
+-    if (handlerTimeout > 0) {
+-      const ac = new AbortController()
+-      request[kRequestSignal] = ac
+-
+-      request[kTimeoutTimer] = setTimeout(() => {
+-        if (!reply.sent) {
+-          const err = new FST_ERR_HANDLER_TIMEOUT(handlerTimeout, context.config?.url)
+-          ac.abort(err)
+-          reply[kReplyIsError] = true
+-          reply.send(err)
+-        }
+-      }, handlerTimeout)
++      const handlerTimeout = context.handlerTimeout
++      if (handlerTimeout > 0) {
++        const ac = new AbortController()
++        request[kRequestSignal] = ac
++
++        request[kTimeoutTimer] = setTimeout(() => {
++          if (!reply.sent) {
++            const err = new FST_ERR_HANDLER_TIMEOUT(handlerTimeout, context.config?.url)
++            ac.abort(err)
++            reply[kReplyIsError] = true
++            reply.send(err)
++          }
++        }, handlerTimeout)
+ 
+-      const onAbort = () => {
+-        if (!ac.signal.aborted) {
+-          ac.abort()
++        const onAbort = () => {
++          if (!ac.signal.aborted) {
++            ac.abort()
++          }
++          clearTimeout(request[kTimeoutTimer])
+         }
+-        clearTimeout(request[kTimeoutTimer])
++        req.on('close', onAbort)
++        request[kOnAbort] = onAbort
+       }
+-      req.on('close', onAbort)
+-      request[kOnAbort] = onAbort
+-    }
+ 
+-    if (hasLogger === true || context.onResponse !== null || handlerTimeout > 0) {
+-      setupResponseListeners(reply)
+-    }
++      if (context.concurrency == null && (hasLogger === true || context.onResponse !== null || handlerTimeout > 0)) {
++        setupResponseListeners(reply)
++      }
+ 
+-    if (context.onTimeout !== null) {
+-      if (!request.raw.socket._meta) {
+-        request.raw.socket.on('timeout', handleTimeout)
++      if (context.onTimeout !== null) {
++        if (!request.raw.socket._meta) {
++          request.raw.socket.on('timeout', handleTimeout)
++        }
++        request.raw.socket._meta = { context, request, reply, onTimeout: handleTimeout }
+       }
+-      request.raw.socket._meta = { context, request, reply, onTimeout: handleTimeout }
+-    }
+ 
+-    if (context.onRequest !== null) {
+-      onRequestHookRunner(
+-        context.onRequest,
+-        request,
+-        reply,
+-        runPreParsing
+-      )
+-    } else {
+-      runPreParsing(null, request, reply)
+-    }
++      if (context.onRequest !== null) {
++        onRequestHookRunner(
++          context.onRequest,
++          request,
++          reply,
++          runPreParsing
++        )
++      } else {
++        runPreParsing(null, request, reply)
++      }
+ 
+-    if (context.onRequestAbort !== null) {
+-      req.on('close', () => {
++      if (context.onRequestAbort !== null) {
++        req.on('close', () => {
+         /* istanbul ignore else */
+-        if (req.aborted) {
+-          onRequestAbortHookRunner(
+-            context.onRequestAbort,
+-            request,
+-            handleOnRequestAbortHooksErrors.bind(null, reply)
+-          )
+-        }
+-      })
++          if (req.aborted) {
++            onRequestAbortHookRunner(
++              context.onRequestAbort,
++              request,
++              handleOnRequestAbortHooksErrors.bind(null, reply)
++            )
++          }
++        })
++      }
+     }
+   }
+ }
+@@ -633,6 +647,34 @@ function validateHandlerTimeoutOption (handlerTimeout) {
+   }
+ }
+ 
++function validateConcurrencyOption (concurrency) {
++  if (concurrency === undefined) return
++
++  if (concurrency === null || typeof concurrency !== 'object' || Array.isArray(concurrency)) {
++    throw new FST_ERR_ROUTE_CONCURRENCY_OPTION_INVALID('concurrency must be an object')
++  }
++
++  if (!Number.isInteger(concurrency.max) || concurrency.max <= 0) {
++    throw new FST_ERR_ROUTE_CONCURRENCY_OPTION_INVALID('max must be a positive integer')
++  }
++
++  const queueLimit = concurrency.queueLimit === undefined ? 0 : concurrency.queueLimit
++  if (!Number.isInteger(queueLimit) || queueLimit < 0) {
++    throw new FST_ERR_ROUTE_CONCURRENCY_OPTION_INVALID('queueLimit must be a non-negative integer')
++  }
++
++  const queueTimeout = concurrency.queueTimeout === undefined ? 30000 : concurrency.queueTimeout
++  if (!Number.isInteger(queueTimeout) || queueTimeout <= 0) {
++    throw new FST_ERR_ROUTE_CONCURRENCY_OPTION_INVALID('queueTimeout must be a positive integer')
++  }
++
++  return Object.freeze({
++    max: concurrency.max,
++    queueLimit,
++    queueTimeout
++  })
++}
++
+ function validateLogLevelOption (logLevel, method, path, logger) {
+   if (logLevel == null || logLevel === '') return
+   if (logger?.levels?.values == null) return
+diff --git a/lib/symbols.js b/lib/symbols.js
+index 507af35..8849f8b 100644
+--- a/lib/symbols.js
++++ b/lib/symbols.js
+@@ -58,6 +58,7 @@ const keys = {
+   kReplyIsRunningOnErrorHook: Symbol('fastify.reply.isRunningOnErrorHook'),
+   kReplySerializerDefault: Symbol('fastify.replySerializerDefault'),
+   kReplyCacheSerializeFns: Symbol('fastify.reply.cache.serializeFns'),
++  kRouteConcurrency: Symbol('fastify.routeConcurrency'),
+   // This symbol is only meant to be used for fastify tests and should not be used for any other purpose
+   kTestInternals: Symbol('fastify.testInternals'),
+   kErrorHandler: Symbol('fastify.errorHandler'),
+diff --git a/test/route-concurrency.test.js b/test/route-concurrency.test.js
+new file mode 100644
+index 0000000..1385576
+--- /dev/null
++++ b/test/route-concurrency.test.js
+@@ -0,0 +1,184 @@
++'use strict'
++
++const { test } = require('node:test')
++const http = require('node:http')
++const { Readable } = require('node:stream')
++const Fastify = require('..')
++
++function deferred () {
++  let release
++  const promise = new Promise(resolve => { release = resolve })
++  return { promise, resolve: release }
++}
++
++function delay (ms) {
++  return new Promise(resolve => setTimeout(resolve, ms))
++}
++
++async function waitFor (predicate, ms = 1000) {
++  const deadline = Date.now() + ms
++  while (!predicate()) {
++    if (Date.now() >= deadline) throw new Error('condition timed out')
++    await delay(2)
++  }
++}
++
++// --- Option validation ---
++
++test('invalid concurrency options fail registration with FST_ERR_ROUTE_CONCURRENCY_OPTION_INVALID', t => {
++  const invalid = [null, [], {}, { max: 0 }, { max: 1.5 }, { max: '1' },
++    { max: 1, queueLimit: -1 }, { max: 1, queueTimeout: 0 }, { max: 1, queueTimeout: '5000' }]
++  t.plan(invalid.length * 2)
++  for (const concurrency of invalid) {
++    const fastify = Fastify()
++    t.assert.throws(() => {
++      fastify.get('/', { concurrency }, async () => 'ok')
++    }, err => {
++      t.assert.ok(err instanceof TypeError)
++      return err.code === 'FST_ERR_ROUTE_CONCURRENCY_OPTION_INVALID'
++    })
++  }
++})
++
++test('request.routeOptions.concurrency is the normalized object, undefined without the option', async t => {
++  t.plan(4)
++  const fastify = Fastify()
++  fastify.get('/limited', { concurrency: { max: 2 } }, async request => request.routeOptions.concurrency)
++  fastify.get('/plain', async request => ({ value: request.routeOptions.concurrency }))
++  fastify.register(async instance => {
++    instance.get('/inherited', async request => request.routeOptions.concurrency)
++    instance.get('/overridden', { concurrency: { max: 1, queueTimeout: 500 } }, async request => request.routeOptions.concurrency)
++  }, { prefix: '/plugin', concurrency: { max: 3, queueLimit: 4 } })
++
++  t.assert.deepStrictEqual((await fastify.inject('/limited')).json(), { max: 2, queueLimit: 0, queueTimeout: 30000 })
++  t.assert.deepStrictEqual((await fastify.inject('/plain')).json(), {})
++  t.assert.deepStrictEqual((await fastify.inject('/plugin/inherited')).json(), { max: 3, queueLimit: 4, queueTimeout: 30000 })
++  t.assert.deepStrictEqual((await fastify.inject('/plugin/overridden')).json(), { max: 1, queueLimit: 0, queueTimeout: 500 })
++})
++
++// --- Admission ---
++
++test('admits at most max requests, queues the rest in FIFO order, rejects beyond queueLimit', async t => {
++  t.plan(5)
++  const fastify = Fastify()
++  const gate = deferred()
++  const started = []
++  const hooks = []
++
++  fastify.get('/:id', {
++    concurrency: { max: 1, queueLimit: 2, queueTimeout: 2000 },
++    onRequest: async request => { hooks.push(request.params.id) }
++  }, async request => {
++    started.push(request.params.id)
++    if (request.params.id === 'first') await gate.promise
++    return request.params.id
++  })
++
++  const first = fastify.inject('/first')
++  await waitFor(() => started.length === 1)
++  const second = fastify.inject('/second')
++  const third = fastify.inject('/third')
++  await delay(10)
++  const rejected = await fastify.inject('/rejected')
++
++  t.assert.strictEqual(rejected.statusCode, 503)
++  t.assert.strictEqual(rejected.json().code, 'FST_ERR_ROUTE_CONCURRENCY_QUEUE_FULL')
++  t.assert.deepStrictEqual(started, ['first'])
++
++  gate.resolve()
++  await Promise.all([first, second, third])
++  t.assert.deepStrictEqual(started, ['first', 'second', 'third'])
++  t.assert.deepStrictEqual(hooks, ['first', 'second', 'third'])
++})
++
++test('a queued request that outlives queueTimeout gets 503 FST_ERR_ROUTE_CONCURRENCY_QUEUE_TIMEOUT', async t => {
++  t.plan(3)
++  const fastify = Fastify()
++  const gate = deferred()
++  const started = []
++
++  fastify.get('/:id', { concurrency: { max: 1, queueLimit: 1, queueTimeout: 30 } }, async request => {
++    started.push(request.params.id)
++    if (request.params.id === 'hold') await gate.promise
++    return request.params.id
++  })
++
++  const held = fastify.inject('/hold')
++  await waitFor(() => started.length === 1)
++  const expired = await fastify.inject('/expired')
++  t.assert.strictEqual(expired.statusCode, 503)
++  t.assert.strictEqual(expired.json().code, 'FST_ERR_ROUTE_CONCURRENCY_QUEUE_TIMEOUT')
++  gate.resolve()
++  await held
++  t.assert.deepStrictEqual(started, ['hold'])
++})
++
++// --- Slot release ---
++
++test('a streaming response holds its slot until the client disconnects, then the next request runs', async t => {
++  t.plan(2)
++  const fastify = Fastify({ forceCloseConnections: true })
++  const started = []
++
++  fastify.get('/stream', { concurrency: { max: 1, queueLimit: 1, queueTimeout: 2000 } }, async (request, reply) => {
++    started.push(request.query.id)
++    if (request.query.id === 'a') {
++      const stream = new Readable({ read () {} })
++      stream.push('head')
++      return reply.send(stream)
++    }
++    return 'b-ok'
++  })
++
++  await fastify.listen({ port: 0 })
++  t.after(() => fastify.close())
++  const port = fastify.server.address().port
++
++  let client
++  const closed = new Promise(resolve => {
++    client = http.get({ port, path: '/stream?id=a' }, res => {
++      res.on('data', () => {})
++      res.on('error', () => {})
++    })
++    client.on('error', () => {})
++    client.on('close', resolve)
++  })
++  await waitFor(() => started.includes('a'))
++
++  const second = new Promise(resolve => {
++    http.get({ port, path: '/stream?id=b' }, res => {
++      let body = ''
++      res.on('data', chunk => { body += chunk })
++      res.on('end', () => resolve({ statusCode: res.statusCode, body }))
++    }).on('error', () => resolve({ statusCode: 0, body: '' }))
++  })
++  await delay(20)
++  t.assert.deepStrictEqual(started, ['a'])
++
++  client.destroy()
++  await closed
++  const result = await second
++  t.assert.deepStrictEqual([result.statusCode, result.body, started], [200, 'b-ok', ['a', 'b']])
++})
++
++test('errors thrown by the handler release the slot exactly once', async t => {
++  t.plan(3)
++  const fastify = Fastify()
++  let active = 0
++  let peak = 0
++
++  fastify.get('/boom', { concurrency: { max: 1, queueLimit: 5 } }, async () => {
++    active++
++    peak = Math.max(peak, active)
++    try {
++      throw new Error('boom')
++    } finally {
++      active--
++    }
++  })
++
++  const [a, b] = await Promise.all([fastify.inject('/boom'), fastify.inject('/boom')])
++  t.assert.strictEqual(a.statusCode, 500)
++  t.assert.strictEqual(b.statusCode, 500)
++  t.assert.strictEqual(peak, 1)
++})
+diff --git a/types/register.d.ts b/types/register.d.ts
+index 6e0438b..483264b 100644
+--- a/types/register.d.ts
++++ b/types/register.d.ts
+@@ -1,5 +1,6 @@
+ import { FastifyPluginOptions, FastifyPluginCallback, FastifyPluginAsync } from './plugin'
+ import { LogLevel } from './logger'
++import { FastifyRouteConcurrencyOptions } from './route'
+ import { FastifyInstance } from './instance'
+ import { RawServerBase } from './utils'
+ import { FastifyBaseLogger, FastifyTypeProvider, RawServerDefault } from '../fastify'
+@@ -8,6 +9,7 @@ export interface RegisterOptions {
+   prefix?: string;
+   logLevel?: LogLevel;
+   logSerializers?: Record<string, (value: any) => string>;
++  concurrency?: FastifyRouteConcurrencyOptions;
+ }
+ 
+ export type FastifyRegisterOptions<Options> = (RegisterOptions & Options)
+diff --git a/types/request.d.ts b/types/request.d.ts
+index 6ee9757..77eebe6 100644
+--- a/types/request.d.ts
++++ b/types/request.d.ts
+@@ -2,7 +2,7 @@ import { ErrorObject } from '@fastify/ajv-compiler'
+ import { FastifyContextConfig } from './context'
+ import { FastifyInstance } from './instance'
+ import { FastifyBaseLogger } from './logger'
+-import { FastifyRouteConfig, RouteGenericInterface, RouteHandlerMethod } from './route'
++import { FastifyRouteConcurrencyOptions, FastifyRouteConfig, RouteGenericInterface, RouteHandlerMethod } from './route'
+ import { FastifySchema } from './schema'
+ import { FastifyRequestType, FastifyTypeProvider, FastifyTypeProviderDefault, ResolveFastifyRequestType } from './type-provider'
+ import { ContextConfigDefault, HTTPMethods, RawRequestDefaultExpression, RawServerBase, RawServerDefault, RequestBodyDefault, RequestHeadersDefault, RequestParamsDefault, RequestQuerystringDefault } from './utils'
+@@ -26,6 +26,7 @@ export interface RequestRouteOptions<ContextConfig = ContextConfigDefault, Schem
+   url: string | undefined;
+   bodyLimit: number;
+   handlerTimeout: number;
++  concurrency?: Required<FastifyRouteConcurrencyOptions>;
+   attachValidation: boolean;
+   logLevel: string;
+   exposeHeadRoute: boolean;
+diff --git a/types/route.d.ts b/types/route.d.ts
+index dce4cff..7d061d2 100644
+--- a/types/route.d.ts
++++ b/types/route.d.ts
+@@ -30,6 +30,12 @@ export interface FastifyRouteConfig {
+   method: HTTPMethods | HTTPMethods[];
+ }
+ 
++export interface FastifyRouteConcurrencyOptions {
++  max: number;
++  queueLimit?: number;
++  queueTimeout?: number;
++}
++
+ export interface RouteGenericInterface extends RequestGenericInterface, ReplyGenericInterface { }
+ 
+ export type RouteConstraintType = Omit<ConstraintStrategy<any>, 'deriveConstraint'> & {
+@@ -66,6 +72,7 @@ export interface RouteShorthandOptions<
+   serializerCompiler?: FastifySerializerCompiler<NoInfer<SchemaCompiler>>;
+   bodyLimit?: number;
+   handlerTimeout?: number;
++  concurrency?: FastifyRouteConcurrencyOptions;
+   logLevel?: LogLevel;
+   config?: FastifyContextConfig & ContextConfig;
+   constraints?: RouteConstraint,

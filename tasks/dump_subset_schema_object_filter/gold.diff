@@ -1,0 +1,1172 @@
+diff --git a/db/db.go b/db/db.go
+index ead5840..6568ef3 100644
+--- a/db/db.go
++++ b/db/db.go
+@@ -1717,12 +1717,28 @@ func (db *DB) Dump(w io.Writer, tableNames ...string) error {
+ 	if err != nil {
+ 		return err
+ 	}
++	subset := len(tableNames) > 0
++
++	// The tables which actually made it into the dump. When only a subset was
++	// asked for these are the only tables the restored database will hold, so
++	// they are what the rest of the schema has to make do with.
++	var dumped []string
++	var dumpedSQL []string
++
+ 	row := rows[0]
+ 	for _, v := range row.Values {
+ 		table := v.Parameters[0].GetS()
+ 
+ 		var stmt string
+ 
++		if subset && strings.HasPrefix(table, "sqlite_") {
++			// Asking for one of SQLite's own tables by name is not asking for
++			// a table of the database. The statements below stand in for those
++			// tables in a whole-database dump, and a dump of a few tables has
++			// nothing for them to stand on.
++			continue
++		}
++
+ 		if table == "sqlite_sequence" {
+ 			stmt = `DELETE FROM "sqlite_sequence";`
+ 		} else if table == "sqlite_stat1" {
+@@ -1731,6 +1747,8 @@ func (db *DB) Dump(w io.Writer, tableNames ...string) error {
+ 			continue
+ 		} else {
+ 			stmt = v.Parameters[2].GetS()
++			dumped = append(dumped, table)
++			dumpedSQL = append(dumpedSQL, stmt)
+ 		}
+ 
+ 		if _, err := w.Write(fmt.Appendf(nil, "%s;\n", stmt)); err != nil {
+@@ -1765,18 +1783,44 @@ func (db *DB) Dump(w io.Writer, tableNames ...string) error {
+ 		}
+ 	}
+ 
++	if subset {
++		// sqlite_sequence is never one of the requested tables, so a subset
++		// dump is the only place its rows can come from. Without them the
++		// restored tables hand out keys the original already used.
++		if err := db.dumpSequences(ctx, conn, w, dumped); err != nil {
++			return err
++		}
++	}
++
+ 	// Do indexes, triggers, and views.
+-	query := `SELECT "name", "type", "sql" FROM "sqlite_master"
+-			  WHERE "sql" NOT NULL AND "type" IN ('index', 'trigger', 'view')`
+-	rows, err = db.queryWithConn(ctx, commReq(query), false, conn)
++	rows, err = db.queryWithConn(ctx, DumpObjectsReq(), false, conn)
+ 	if err != nil {
+ 		return err
+ 	}
+ 	row = rows[0]
++	objects := make([]schemaObject, 0, len(row.Values))
+ 	for _, v := range row.Values {
+-		// For indexes, triggers, and views, we could add more sophisticated filtering
+-		// based on the table they relate to, but for now include all of them
+-		if _, err := w.Write(fmt.Appendf(nil, "%s;\n", v.Parameters[2].GetS())); err != nil {
++		objects = append(objects, schemaObject{
++			Name:    v.Parameters[0].GetS(),
++			Type:    v.Parameters[1].GetS(),
++			TblName: v.Parameters[2].GetS(),
++			SQL:     v.Parameters[3].GetS(),
++		})
++	}
++	if subset {
++		// Only the dumped tables are there to be referred to, so what the
++		// restored database can be asked is not what the original can be
++		// asked. Every object is put to both databases, and comes along only
++		// when they answer alike -- in the order sqlite_master holds it, which
++		// is the order it was created in and so an order it replays in.
++		all, err := db.allTableSQL(ctx, conn)
++		if err != nil {
++			return err
++		}
++		objects = probeSchemaObjects(objects, dumped, dumpedSQL, all)
++	}
++	for _, o := range objects {
++		if _, err := w.Write(fmt.Appendf(nil, "%s;\n", o.SQL)); err != nil {
+ 			return err
+ 		}
+ 	}
+@@ -1785,6 +1829,65 @@ func (db *DB) Dump(w io.Writer, tableNames ...string) error {
+ 	return err
+ }
+ 
++// allTableSQL returns the CREATE statement of every table of the database,
++// which is what it takes to stand the original up next to the subset and ask
++// them both the same questions.
++func (db *DB) allTableSQL(ctx context.Context, conn *sql.Conn) ([]string, error) {
++	rows, err := db.queryWithConn(ctx, DumpTablesReq(), false, conn)
++	if err != nil {
++		return nil, err
++	}
++	var out []string
++	for _, v := range rows[0].Values {
++		if strings.HasPrefix(v.Parameters[0].GetS(), "sqlite_") {
++			continue
++		}
++		out = append(out, v.Parameters[2].GetS())
++	}
++	return out, nil
++}
++
++// dumpSequences writes the AUTOINCREMENT counters of the given tables, if any
++// of them have one. It is only used when dumping a subset of the database; a
++// full dump picks sqlite_sequence up as a table like any other.
++func (db *DB) dumpSequences(ctx context.Context, conn *sql.Conn, w io.Writer, tables []string) error {
++	if len(tables) == 0 {
++		return nil
++	}
++
++	// sqlite_sequence only exists once a database has had an AUTOINCREMENT
++	// table created in it, so querying it blind would fail on one which never
++	// has.
++	rows, err := db.queryWithConn(ctx, DumpTablesReq("sqlite_sequence"), false, conn)
++	if err != nil {
++		return err
++	}
++	if len(rows[0].Values) == 0 {
++		return nil
++	}
++
++	rows, err = db.queryWithConn(ctx, DumpSequencesReq(tables...), false, conn)
++	if err != nil {
++		return err
++	}
++	if len(rows[0].Values) == 0 {
++		return nil
++	}
++
++	// The rows dumped above will have set a counter of their own for each
++	// table as they were inserted; clear those before restoring the originals,
++	// which are higher wherever rows have since been deleted.
++	if _, err := w.Write([]byte("DELETE FROM \"sqlite_sequence\";\n")); err != nil {
++		return err
++	}
++	for _, v := range rows[0].Values {
++		if _, err := w.Write(fmt.Appendf(nil, "%s;\n", v.Parameters[0].GetS())); err != nil {
++			return err
++		}
++	}
++	return nil
++}
++
+ // StmtReadOnly returns whether the given SQL statement is read-only.
+ // As per https://www.sqlite.org/c3ref/stmt_readonly.html, this function
+ // may not return 100% correct results, but should cover most scenarios.
+diff --git a/db/dump_deps.go b/db/dump_deps.go
+new file mode 100644
+index 0000000..f60f797
+--- /dev/null
++++ b/db/dump_deps.go
+@@ -0,0 +1,388 @@
++package db
++
++import (
++	"context"
++	"database/sql"
++	"fmt"
++	"strings"
++)
++
++// schemaObject is a single row of sqlite_master describing an index, trigger
++// or view.
++type schemaObject struct {
++	Name    string
++	Type    string
++	TblName string
++	SQL     string
++}
++
++// Working out which schema objects a subset dump can carry is not a question
++// about SQL text, so nothing here reads any. It is a question about what a
++// database does, and SQLite answers it: build the database the dump would
++// restore into, ask it the questions the original answers, and keep an object
++// exactly when both databases answer the same way.
++//
++// "The same way" is the whole of it, and it is not the same as "it works". A
++// view whose table was dropped long ago fails in the original too; carrying it
++// keeps the restored database the same as the original, and dropping it would
++// quietly repair a database this code was only asked to copy. So both sides
++// are always run, and their answers compared -- never one side checked for
++// success.
++//
++// Nothing is executed that could change anything: an object's questions are
++// asked by preparing the statement, which is where SQLite resolves a view's
++// tables and a trigger's whole body.
++
++// answer is what a database says when asked to prepare a statement.
++type answer struct {
++	ok  bool
++	err string
++}
++
++func (a answer) equal(b answer) bool { return a.ok == b.ok && a.err == b.err }
++
++func quoteIdent(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
++
++// scratch is a throwaway in-memory database.
++type scratch struct {
++	db   *sql.DB
++	conn *sql.Conn
++	ctx  context.Context
++}
++
++func newScratch() (*scratch, error) {
++	drv := DefaultDriver()
++	d, err := sql.Open(drv.Name(), ":memory:")
++	if err != nil {
++		return nil, err
++	}
++	d.SetMaxOpenConns(1)
++	ctx := context.Background()
++	c, err := d.Conn(ctx)
++	if err != nil {
++		d.Close()
++		return nil, err
++	}
++	return &scratch{db: d, conn: c, ctx: ctx}, nil
++}
++
++func (s *scratch) close() {
++	s.conn.Close()
++	s.db.Close()
++}
++
++func (s *scratch) exec(q string) error {
++	_, err := s.conn.ExecContext(s.ctx, q)
++	return err
++}
++
++// ask prepares the statement and reports what SQLite said. The statement is
++// never run.
++func (s *scratch) ask(q string) answer {
++	st, err := s.conn.PrepareContext(s.ctx, q)
++	if err != nil {
++		return answer{ok: false, err: err.Error()}
++	}
++	st.Close()
++	return answer{ok: true}
++}
++
++func (s *scratch) askAll(stmts []string) []answer {
++	out := make([]answer, 0, len(stmts))
++	for _, q := range stmts {
++		out = append(out, s.ask(q))
++	}
++	return out
++}
++
++func sameAnswers(a, b []answer) bool {
++	if len(a) != len(b) {
++		return false
++	}
++	for i := range a {
++		if !a[i].equal(b[i]) {
++			return false
++		}
++	}
++	return true
++}
++
++// exists reports whether the database holds a table or view of that name.
++func (s *scratch) exists(name string) bool {
++	rows, err := s.conn.QueryContext(s.ctx,
++		`SELECT count(*) FROM sqlite_master WHERE name = ? AND type IN ('table','view')`, name)
++	if err != nil {
++		return false
++	}
++	defer rows.Close()
++	n := 0
++	if rows.Next() {
++		if err := rows.Scan(&n); err != nil {
++			return false
++		}
++	}
++	return n > 0
++}
++
++// columns names the columns of a table or view, in order, with the first one
++// that is not part of the primary key first in the second return value.
++func (s *scratch) columns(name string) (all []string, plain []string) {
++	rows, err := s.conn.QueryContext(s.ctx, fmt.Sprintf("PRAGMA table_info(%s)", quoteIdent(name)))
++	if err != nil {
++		return nil, nil
++	}
++	defer rows.Close()
++	for rows.Next() {
++		var cid, notnull, pk int
++		var nm, typ string
++		var dflt any
++		if err := rows.Scan(&cid, &nm, &typ, &notnull, &dflt, &pk); err != nil {
++			return all, plain
++		}
++		all = append(all, nm)
++		if pk == 0 {
++			plain = append(plain, nm)
++		}
++	}
++	return all, plain
++}
++
++// probeStatements are the three writes whose preparation resolves every
++// trigger hanging on the target. They are worked out once, on the original, so
++// that both databases are asked the very same questions.
++func (s *scratch) probeStatements(target string) []string {
++	q := quoteIdent(target)
++	out := []string{
++		fmt.Sprintf("INSERT INTO %s SELECT * FROM %s WHERE 0", q, q),
++		fmt.Sprintf("DELETE FROM %s WHERE 0", q),
++	}
++	all, plain := s.columns(target)
++	if len(plain) == 0 {
++		plain = all
++	}
++	if len(plain) > 0 {
++		c := quoteIdent(plain[0])
++		out = append(out, fmt.Sprintf("UPDATE %s SET %s = %s WHERE 0", q, c, c))
++	}
++	return out
++}
++
++// build makes a scratch database holding the given tables and objects.
++//
++// A table that will not create is skipped when tolerant is set -- that is the
++// original, where a virtual table this code does not handle is none of its
++// business -- and is an error otherwise. The name of the first object that
++// would not create is returned; the caller decides what that means.
++func build(tableSQL []string, objs []schemaObject, tolerant bool) (*scratch, string, error) {
++	s, err := newScratch()
++	if err != nil {
++		return nil, "", err
++	}
++	for _, t := range tableSQL {
++		if err := s.exec(t); err != nil && !tolerant {
++			s.close()
++			return nil, "", err
++		}
++	}
++	for _, o := range objs {
++		if err := s.exec(o.SQL); err != nil {
++			if tolerant {
++				continue
++			}
++			s.close()
++			return nil, o.Name, nil
++		}
++	}
++	return s, "", nil
++}
++
++func nonTriggers(objs []schemaObject) []schemaObject {
++	out := make([]schemaObject, 0, len(objs))
++	for _, o := range objs {
++		if !strings.EqualFold(o.Type, "trigger") {
++			out = append(out, o)
++		}
++	}
++	return out
++}
++
++// original holds what the database being dumped answers, so that the database
++// the dump would restore into can be held to the same answers.
++type original struct {
++	views    map[string]answer   // SELECT * FROM <view>
++	trigStmt map[string][]string // trigger name -> the questions asked of its table
++	trigAns  map[string][]answer // trigger name -> the original's answers
++	tables   map[string][]string // requested table -> the questions asked of it
++	tableAns map[string][]answer
++}
++
++func readOriginal(allTableSQL []string, objs []schemaObject, tables []string) (*original, error) {
++	o := &original{
++		views:    map[string]answer{},
++		trigStmt: map[string][]string{},
++		trigAns:  map[string][]answer{},
++		tables:   map[string][]string{},
++		tableAns: map[string][]answer{},
++	}
++
++	whole, _, err := build(allTableSQL, objs, true)
++	if err != nil {
++		return nil, err
++	}
++	for _, ob := range objs {
++		if strings.EqualFold(ob.Type, "view") {
++			o.views[ob.Name] = whole.ask(fmt.Sprintf("SELECT * FROM %s", quoteIdent(ob.Name)))
++		}
++	}
++	for _, t := range tables {
++		stmts := whole.probeStatements(t)
++		o.tables[t] = stmts
++		o.tableAns[t] = whole.askAll(stmts)
++	}
++	whole.close()
++
++	// Each trigger is asked about on an original stripped to that one trigger,
++	// and will be answered on a restored database stripped the same way. A
++	// trigger left behind for its own good reasons must never be the reason
++	// its neighbour looks broken.
++	others := nonTriggers(objs)
++	for _, ob := range objs {
++		if !strings.EqualFold(ob.Type, "trigger") {
++			continue
++		}
++		iso, bad, err := build(allTableSQL, append(append([]schemaObject(nil), others...), ob), true)
++		if err != nil {
++			return nil, err
++		}
++		if bad != "" || !iso.exists(ob.TblName) {
++			iso.close()
++			continue
++		}
++		stmts := iso.probeStatements(ob.TblName)
++		o.trigStmt[ob.Name] = stmts
++		o.trigAns[ob.Name] = iso.askAll(stmts)
++		iso.close()
++	}
++	return o, nil
++}
++
++// probeSchemaObjects returns the objects a dump of the given tables can carry:
++// the largest set for which the restored database answers exactly as the
++// original does.
++func probeSchemaObjects(objs []schemaObject, tables []string, tableSQL []string,
++	allTableSQL []string) []schemaObject {
++	orig, err := readOriginal(allTableSQL, objs, tables)
++	if err != nil {
++		// Nothing can be established about this database, so nothing is
++		// claimed about it: better a dump that carries only the tables than
++		// one that will not restore.
++		return nil
++	}
++
++	kept := append([]schemaObject(nil), objs...)
++	drop := func(name string) {
++		out := kept[:0]
++		for _, o := range kept {
++			if o.Name != name {
++				out = append(out, o)
++			}
++		}
++		kept = out
++	}
++
++	for {
++		s, bad, err := build(tableSQL, kept, false)
++		if err != nil {
++			return nil
++		}
++		if bad != "" {
++			// It will not even create without the tables that were left out.
++			drop(bad)
++			continue
++		}
++
++		for _, o := range kept {
++			if !strings.EqualFold(o.Type, "view") {
++				continue
++			}
++			if !s.ask(fmt.Sprintf("SELECT * FROM %s", quoteIdent(o.Name))).equal(orig.views[o.Name]) {
++				bad = o.Name
++				break
++			}
++		}
++		s.close()
++		if bad != "" {
++			drop(bad)
++			continue
++		}
++
++		others := nonTriggers(kept)
++		for _, o := range kept {
++			if !strings.EqualFold(o.Type, "trigger") {
++				continue
++			}
++			iso, b, err := build(tableSQL, append(append([]schemaObject(nil), others...), o), false)
++			if err != nil {
++				return nil
++			}
++			if b != "" {
++				iso.close()
++				bad = o.Name
++				break
++			}
++			stmts, known := orig.trigStmt[o.Name]
++			if known && !sameAnswers(iso.askAll(stmts), orig.trigAns[o.Name]) {
++				bad = o.Name
++			}
++			iso.close()
++			if bad != "" {
++				break
++			}
++		}
++		if bad != "" {
++			drop(bad)
++			continue
++		}
++
++		// With everything that survived in place, the requested tables must
++		// still answer as they did. They can only have got worse -- a trigger
++		// that was left behind cannot make them refuse anything -- so a
++		// difference in that direction is charged to a trigger on that table.
++		s, b, err := build(tableSQL, kept, false)
++		if err != nil {
++			return nil
++		}
++		if b != "" {
++			drop(b)
++			continue
++		}
++		for _, t := range tables {
++			got := s.askAll(orig.tables[t])
++			want := orig.tableAns[t]
++			worse := false
++			for i := range got {
++				if i < len(want) && !got[i].ok && want[i].ok {
++					worse = true
++				}
++			}
++			if !worse {
++				continue
++			}
++			for _, o := range kept {
++				if strings.EqualFold(o.Type, "trigger") && strings.EqualFold(o.TblName, t) {
++					bad = o.Name
++					break
++				}
++			}
++			if bad != "" {
++				break
++			}
++		}
++		s.close()
++		if bad != "" {
++			drop(bad)
++			continue
++		}
++		return kept
++	}
++}
+diff --git a/db/dump_subset_test.go b/db/dump_subset_test.go
+new file mode 100644
+index 0000000..9de98ad
+--- /dev/null
++++ b/db/dump_subset_test.go
+@@ -0,0 +1,560 @@
++package db
++
++import (
++	"os"
++	"strings"
++	"testing"
++)
++
++// mustLoadStatements executes each statement in turn, failing on the first
++// error.
++func mustLoadStatements(t *testing.T, db *DB, stmts ...string) {
++	t.Helper()
++	for _, s := range stmts {
++		r, err := db.ExecuteStringStmt(s)
++		if err != nil {
++			t.Fatalf("failed to execute %q: %s", s, err.Error())
++		}
++		for _, x := range r {
++			if e := x.GetError(); e != "" {
++				t.Fatalf("failed to execute %q: %s", s, e)
++			}
++		}
++	}
++}
++
++// mustRestore loads a dump into a fresh database, failing if anything in it is
++// rejected. The caller is responsible for closing and removing the result.
++func mustRestore(t *testing.T, dump string) (*DB, string) {
++	t.Helper()
++	db, path := mustCreateOnDiskDatabase()
++	r, err := db.ExecuteStringStmt(dump)
++	if err != nil {
++		t.Fatalf("failed to load dump: %s\n%s", err.Error(), dump)
++	}
++	for _, x := range r {
++		if e := x.GetError(); e != "" {
++			t.Fatalf("failed to load dump: %s\n%s", e, dump)
++		}
++	}
++	return db, path
++}
++
++// mustSchemaObjects returns the indexes, triggers and views of a database,
++// as "type name" strings in the order sqlite_master holds them.
++func mustSchemaObjects(t *testing.T, db *DB) []string {
++	t.Helper()
++	rows, err := db.QueryStringStmt(`SELECT "type" || ' ' || "name" FROM sqlite_master
++		WHERE "type" IN ('index', 'trigger', 'view') AND "sql" NOT NULL
++		  AND "name" NOT LIKE 'sqlite^_%' ESCAPE '^'`)
++	if err != nil {
++		t.Fatalf("failed to read schema: %s", err.Error())
++	}
++	if e := rows[0].GetError(); e != "" {
++		t.Fatalf("failed to read schema: %s", e)
++	}
++	var out []string
++	for _, v := range rows[0].Values {
++		out = append(out, v.Parameters[0].GetS())
++	}
++	return out
++}
++
++// mustDumpSubset dumps the given tables from db.
++func mustDumpSubset(t *testing.T, db *DB, tables ...string) string {
++	t.Helper()
++	var buf strings.Builder
++	if err := db.Dump(&buf, tables...); err != nil {
++		t.Fatalf("failed to dump: %s", err.Error())
++	}
++	return buf.String()
++}
++
++// shopSchema is a database with every kind of schema object hanging off two
++// groups of tables, so that a subset of it leaves some of them behind.
++var shopSchema = []string{
++	`CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, email TEXT)`,
++	`CREATE TABLE audit (id INTEGER PRIMARY KEY, msg TEXT)`,
++	`CREATE INDEX idx_users_named ON users(name) WHERE name IS NOT NULL`,
++	`CREATE INDEX idx_users_email_lower ON users(lower(email))`,
++	`CREATE INDEX idx_audit_msg ON audit(msg)`,
++	`CREATE VIEW user_names AS SELECT id, name FROM users`,
++	`CREATE VIEW user_names_upper AS SELECT id, upper(name) AS name FROM user_names`,
++	`CREATE VIEW audit_view AS SELECT msg FROM audit`,
++	`CREATE VIEW user_audit AS SELECT name, (SELECT count(*) FROM audit) AS n FROM users`,
++	`CREATE VIEW quoted_users AS SELECT name FROM "users"`,
++	`CREATE VIEW main_users AS SELECT name FROM main.users`,
++	`CREATE VIEW cte_audit AS WITH audit AS (SELECT 1 AS n) SELECT n FROM audit`,
++	`CREATE TRIGGER users_audit AFTER INSERT ON users BEGIN INSERT INTO audit(msg) VALUES('user'); END`,
++	`CREATE TRIGGER on_view INSTEAD OF INSERT ON user_names BEGIN INSERT INTO users(name) VALUES(NEW.name); END`,
++	`INSERT INTO users(name, email) VALUES('alice', 'A@x.com'), ('bob', 'B@x.com')`,
++	`DELETE FROM audit`,
++	`INSERT INTO audit(id, msg) VALUES(1, 'created')`,
++}
++
++// Test_DB_DumpSubsetObjects covers which schema objects a subset dump carries.
++// An object comes along when everything it needs is in the subset, and is left
++// behind when it is not -- including the cases where the reference is not where
++// the object's own name suggests it is.
++func Test_DB_DumpSubsetObjects(t *testing.T) {
++	db, path := mustCreateOnDiskDatabaseWAL()
++	defer os.Remove(path)
++	defer db.Close()
++	mustLoadStatements(t, db, shopSchema...)
++
++	tests := []struct {
++		name   string
++		tables []string
++		want   string
++	}{
++		{
++			// Indexes on a table in the subset come along, partial and
++			// expression indexes included; the index on the table left behind
++			// does not. A view on a view comes along with its base, and a
++			// trigger on a view that came along comes along too. A reference
++			// through quotes or through main. is the same reference. A name
++			// defined by a CTE is not a table at all, so the view using it
++			// needs nothing.
++			name:   "subset of the tables",
++			tables: []string{"users"},
++			want: `index idx_users_named,index idx_users_email_lower,` +
++				`view user_names,view user_names_upper,view quoted_users,view main_users,view cte_audit,` +
++				`trigger on_view`,
++		},
++		{
++			// Everything is in the subset, so nothing may be dropped: the
++			// correct answer here is to carry the whole schema.
++			name:   "all of the tables",
++			tables: []string{"users", "audit"},
++			want: `index idx_users_named,index idx_users_email_lower,index idx_audit_msg,` +
++				`view user_names,view user_names_upper,view audit_view,view user_audit,` +
++				`view quoted_users,view main_users,view cte_audit,` +
++				`trigger users_audit,trigger on_view`,
++		},
++		{
++			// Nothing hangs off audit alone: user_audit reaches back to users
++			// and audit_view's own table is here, so only the objects needing
++			// nothing survive.
++			name:   "the other subset",
++			tables: []string{"audit"},
++			want:   `index idx_audit_msg,view audit_view,view cte_audit`,
++		},
++		{
++			// No table matched, so nothing is there to be referred to.
++			name:   "no such table",
++			tables: []string{"nosuch"},
++			want:   `view cte_audit`,
++		},
++	}
++
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			dump := mustDumpSubset(t, db, tc.tables...)
++			newDB, newPath := mustRestore(t, dump)
++			defer os.Remove(newPath)
++			defer newDB.Close()
++
++			if exp, got := tc.want, strings.Join(mustSchemaObjects(t, newDB), ","); exp != got {
++				t.Fatalf("unexpected schema objects\nexp: %s\ngot: %s", exp, got)
++			}
++		})
++	}
++}
++
++// Test_DB_DumpSubsetRestoredIsUsable covers the objects whose absence or
++// presence a plain load does not report. A view reaching outside the subset
++// loads without complaint and only fails when it is queried; a trigger writing
++// outside the subset loads without complaint and only fails when the table it
++// hangs on is written to.
++func Test_DB_DumpSubsetRestoredIsUsable(t *testing.T) {
++	db, path := mustCreateOnDiskDatabaseWAL()
++	defer os.Remove(path)
++	defer db.Close()
++	mustLoadStatements(t, db, shopSchema...)
++
++	dump := mustDumpSubset(t, db, "users")
++	newDB, newPath := mustRestore(t, dump)
++	defer os.Remove(newPath)
++	defer newDB.Close()
++
++	for _, v := range []string{"user_names", "user_names_upper", "quoted_users", "main_users", "cte_audit"} {
++		rows, err := newDB.QueryStringStmt(`SELECT * FROM "` + v + `"`)
++		if err != nil {
++			t.Fatalf("failed to query view %s: %s", v, err.Error())
++		}
++		if e := rows[0].GetError(); e != "" {
++			t.Fatalf("failed to query view %s: %s", v, e)
++		}
++	}
++
++	r, err := newDB.ExecuteStringStmt(`INSERT INTO users(name, email) VALUES('carol', 'C@x.com')`)
++	if err != nil {
++		t.Fatalf("failed to write to restored table: %s", err.Error())
++	}
++	if e := r[0].GetError(); e != "" {
++		t.Fatalf("failed to write to restored table: %s", e)
++	}
++
++	rows, err := newDB.QueryStringStmt(`SELECT COUNT(*) FROM users`)
++	if err != nil {
++		t.Fatalf("failed to count rows: %s", err.Error())
++	}
++	if exp, got := `[{"columns":["COUNT(*)"],"types":["integer"],"values":[[3]]}]`, asJSON(rows); exp != got {
++		t.Fatalf("unexpected results for query\nexp: %s\ngot: %s", exp, got)
++	}
++}
++
++// Test_DB_DumpSubsetObjectOrder covers the order the surviving objects are
++// written in: a view built on a view has to be created after its base, which
++// is the order sqlite_master already holds them in.
++func Test_DB_DumpSubsetObjectOrder(t *testing.T) {
++	db, path := mustCreateOnDiskDatabaseWAL()
++	defer os.Remove(path)
++	defer db.Close()
++	mustLoadStatements(t, db,
++		`CREATE TABLE a (id INTEGER PRIMARY KEY, w TEXT)`,
++		`CREATE TABLE b (id INTEGER PRIMARY KEY, z TEXT)`,
++		`CREATE VIEW v1 AS SELECT id, w FROM a`,
++		`CREATE VIEW v2 AS SELECT id, w FROM v1`,
++		`CREATE VIEW v3 AS SELECT v2.id, v2.w FROM v2 JOIN v1 ON v1.id = v2.id`,
++		`CREATE VIEW vb AS SELECT v1.w, b.z FROM v1 JOIN b ON b.id = v1.id`,
++		`CREATE TRIGGER t_on_v3 INSTEAD OF INSERT ON v3 BEGIN INSERT INTO a(w) VALUES(NEW.w); END`,
++	)
++
++	dump := mustDumpSubset(t, db, "a")
++	for _, s := range []string{"vb"} {
++		if strings.Contains(dump, s) {
++			t.Fatalf("dump should not mention %s\n%s", s, dump)
++		}
++	}
++	var order []string
++	for _, line := range strings.Split(dump, "\n") {
++		for _, s := range []string{"v1", "v2", "v3", "t_on_v3"} {
++			if strings.HasPrefix(line, "CREATE VIEW "+s+" ") || strings.HasPrefix(line, "CREATE TRIGGER "+s+" ") {
++				order = append(order, s)
++			}
++		}
++	}
++	if exp, got := "v1,v2,v3,t_on_v3", strings.Join(order, ","); exp != got {
++		t.Fatalf("unexpected order of objects\nexp: %s\ngot: %s\n%s", exp, got, dump)
++	}
++
++	newDB, newPath := mustRestore(t, dump)
++	defer os.Remove(newPath)
++	defer newDB.Close()
++	rows, err := newDB.QueryStringStmt(`SELECT COUNT(*) FROM v3`)
++	if err != nil {
++		t.Fatalf("failed to query restored view: %s", err.Error())
++	}
++	if e := rows[0].GetError(); e != "" {
++		t.Fatalf("failed to query restored view: %s", e)
++	}
++}
++
++// Test_DB_DumpSubsetSequences covers the AUTOINCREMENT counters. Restoring a
++// subset must not change what the database does next, and must not carry the
++// counters of tables which were not asked for.
++func Test_DB_DumpSubsetSequences(t *testing.T) {
++	db, path := mustCreateOnDiskDatabaseWAL()
++	defer os.Remove(path)
++	defer db.Close()
++	mustLoadStatements(t, db,
++		`CREATE TABLE alpha (id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)`,
++		`CREATE TABLE zebra (id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)`,
++		`CREATE TABLE plain (id INTEGER PRIMARY KEY, v TEXT)`,
++		`INSERT INTO alpha(v) VALUES('a1'), ('a2'), ('a3')`,
++		`INSERT INTO zebra(v) VALUES('z1'), ('z2')`,
++		`INSERT INTO plain VALUES(1, 'p1')`,
++		`DELETE FROM alpha WHERE id > 1`,
++		`DELETE FROM zebra WHERE id > 1`,
++	)
++
++	tests := []struct {
++		name    string
++		tables  []string
++		wantSeq string
++		insert  string
++		into    string
++		wantKey string
++	}{
++		{
++			name:    "table sorting after sqlite_sequence",
++			tables:  []string{"zebra"},
++			wantSeq: `[{"columns":["name","seq"],"types":["text","integer"],"values":[["zebra",2]]}]`,
++			insert:  `INSERT INTO zebra(v) VALUES('z3')`,
++			into:    "zebra",
++			wantKey: `[{"columns":["MAX(id)"],"types":["integer"],"values":[[3]]}]`,
++		},
++		{
++			name:    "counter of one table only",
++			tables:  []string{"alpha"},
++			wantSeq: `[{"columns":["name","seq"],"types":["text","integer"],"values":[["alpha",3]]}]`,
++			insert:  `INSERT INTO alpha(v) VALUES('a4')`,
++			into:    "alpha",
++			wantKey: `[{"columns":["MAX(id)"],"types":["integer"],"values":[[4]]}]`,
++		},
++		{
++			name:   "no counters wanted",
++			tables: []string{"plain"},
++			// sqlite_sequence is never created, so it cannot be read.
++			wantSeq: `[{"error":"no such table: sqlite_sequence"}]`,
++		},
++		{
++			name:    "counters of both, and of nothing else",
++			tables:  []string{"alpha", "zebra"},
++			wantSeq: `[{"columns":["name","seq"],"types":["text","integer"],"values":[["alpha",3],["zebra",2]]}]`,
++			insert:  `INSERT INTO alpha(v) VALUES('a4')`,
++			into:    "alpha",
++			wantKey: `[{"columns":["MAX(id)"],"types":["integer"],"values":[[4]]}]`,
++		},
++		{
++			name:    "a table with counters and one without",
++			tables:  []string{"plain", "zebra"},
++			wantSeq: `[{"columns":["name","seq"],"types":["text","integer"],"values":[["zebra",2]]}]`,
++			insert:  `INSERT INTO zebra(v) VALUES('z3')`,
++			into:    "zebra",
++			wantKey: `[{"columns":["MAX(id)"],"types":["integer"],"values":[[3]]}]`,
++		},
++	}
++
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			dump := mustDumpSubset(t, db, tc.tables...)
++			newDB, newPath := mustRestore(t, dump)
++			defer os.Remove(newPath)
++			defer newDB.Close()
++
++			rows, err := newDB.QueryStringStmt(`SELECT name, seq FROM sqlite_sequence ORDER BY name`)
++			if err != nil {
++				t.Fatalf("failed to read counters: %s", err.Error())
++			}
++			if exp, got := tc.wantSeq, asJSON(rows); exp != got {
++				t.Fatalf("unexpected counters\nexp: %s\ngot: %s\n%s", exp, got, dump)
++			}
++			if tc.insert == "" {
++				return
++			}
++
++			r, err := newDB.ExecuteStringStmt(tc.insert)
++			if err != nil {
++				t.Fatalf("failed to insert: %s", err.Error())
++			}
++			if e := r[0].GetError(); e != "" {
++				t.Fatalf("failed to insert: %s", e)
++			}
++			rows, err = newDB.QueryStringStmt(`SELECT MAX(id) FROM "` + tc.into + `"`)
++			if err != nil {
++				t.Fatalf("failed to read key: %s", err.Error())
++			}
++			if exp, got := tc.wantKey, asJSON(rows); exp != got {
++				t.Fatalf("unexpected key for next row\nexp: %s\ngot: %s", exp, got)
++			}
++		})
++	}
++}
++
++// Test_DB_DumpFullUnchanged covers the case where doing nothing is right: a
++// dump with no tables named is the whole database, warts and all, and none of
++// the filtering above may touch it.
++func Test_DB_DumpFullUnchanged(t *testing.T) {
++	db, path := mustCreateOnDiskDatabaseWAL()
++	defer os.Remove(path)
++	defer db.Close()
++	mustLoadStatements(t, db,
++		`CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)`,
++		`CREATE TABLE audit (id INTEGER PRIMARY KEY, msg TEXT)`,
++		`CREATE INDEX idx_audit_msg ON audit(msg)`,
++		`CREATE VIEW audit_view AS SELECT msg FROM audit`,
++		`CREATE TRIGGER users_audit AFTER INSERT ON users BEGIN INSERT INTO audit(msg) VALUES('user'); END`,
++		`INSERT INTO users(name) VALUES('alice')`,
++		`DELETE FROM audit`,
++	)
++
++	// Two warts are pinned here on purpose. The tables are written in name
++	// order, so sqlite_sequence lands before the AUTOINCREMENT table it
++	// belongs to; and its statement already ends in a semicolon, so a second
++	// one is written after it. Both are how a full dump has always come out.
++	exp := `PRAGMA foreign_keys=OFF;
++BEGIN TRANSACTION;
++CREATE TABLE audit (id INTEGER PRIMARY KEY, msg TEXT);
++DELETE FROM "sqlite_sequence";;
++INSERT INTO "sqlite_sequence" VALUES('users',1);
++CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);
++INSERT INTO "users" VALUES(1,'alice');
++CREATE INDEX idx_audit_msg ON audit(msg);
++CREATE VIEW audit_view AS SELECT msg FROM audit;
++CREATE TRIGGER users_audit AFTER INSERT ON users BEGIN INSERT INTO audit(msg) VALUES('user'); END;
++COMMIT;
++`
++	if got := mustDumpSubset(t, db); exp != got {
++		t.Fatalf("unexpected full dump\nexp:\n%s\ngot:\n%s", exp, got)
++	}
++}
++
++// Test_DB_DumpSubsetNothingToFilter covers the other case where doing nothing
++// is right: a database whose whole schema is tables has no objects to leave
++// behind, and a subset of it is just its tables.
++func Test_DB_DumpSubsetNothingToFilter(t *testing.T) {
++	db, path := mustCreateOnDiskDatabaseWAL()
++	defer os.Remove(path)
++	defer db.Close()
++	mustLoadStatements(t, db,
++		`CREATE TABLE foo (id INTEGER PRIMARY KEY, name TEXT)`,
++		`CREATE TABLE bar (id INTEGER PRIMARY KEY, age INTEGER)`,
++		`INSERT INTO foo VALUES(1, 'fiona')`,
++		`INSERT INTO bar VALUES(1, 25)`,
++	)
++
++	exp := `PRAGMA foreign_keys=OFF;
++BEGIN TRANSACTION;
++CREATE TABLE foo (id INTEGER PRIMARY KEY, name TEXT);
++INSERT INTO "foo" VALUES(1,'fiona');
++COMMIT;
++`
++	if got := mustDumpSubset(t, db, "foo"); exp != got {
++		t.Fatalf("unexpected dump\nexp:\n%s\ngot:\n%s", exp, got)
++	}
++}
++
++// wildSchema is a database made of the shapes a real one grows over the
++// years: syntax SQLite takes but a hand-written reader would not, and objects
++// which stopped working long before anybody thought about backups.
++var wildSchema = []string{
++	`CREATE TABLE keep (id INTEGER PRIMARY KEY, v TEXT)`,
++	`CREATE TABLE keep2 (id INTEGER PRIMARY KEY, v TEXT)`,
++	`CREATE TABLE gone (id INTEGER PRIMARY KEY)`,
++	`INSERT INTO keep VALUES(1, 'a')`,
++	`INSERT INTO keep2 VALUES(1, 'b')`,
++
++	`CREATE VIEW w_brackets AS SELECT id FROM [keep]`,
++	`CREATE VIEW w_over_brackets AS SELECT id FROM w_brackets`,
++	`CREATE VIEW w_from_with AS SELECT x AS id FROM (WITH c(x) AS (SELECT id FROM keep) SELECT x FROM c)`,
++	`CREATE VIEW w_in_with AS SELECT id FROM keep WHERE id IN (WITH c(x) AS (SELECT id FROM keep2) SELECT x FROM c)`,
++	`CREATE VIEW w_scalar_with AS SELECT id, (WITH c(x) AS (SELECT 1) SELECT x FROM c) AS m FROM keep`,
++	`CREATE VIEW w_in_values AS SELECT id FROM keep WHERE id IN (VALUES(1),(2))`,
++	`CREATE VIEW w_right AS SELECT k.id FROM keep k RIGHT JOIN keep2 k2 ON k.id = k2.id`,
++	`CREATE VIEW w_isdistinct AS SELECT id FROM keep WHERE v IS DISTINCT FROM 'x'`,
++	`CREATE VIEW w_underscores AS SELECT id FROM keep WHERE id <> 1_000`,
++	`CREATE VIEW w_agg_order AS SELECT group_concat(v, ',' ORDER BY id) AS id FROM keep`,
++	`CREATE VIEW w_cast_quoted AS SELECT CAST(id AS "TEXT") AS id FROM keep`,
++	`CREATE INDEX w_idx_brackets ON [keep](v)`,
++	`CREATE TRIGGER w_tr_with_ins AFTER INSERT ON keep BEGIN INSERT OR IGNORE INTO keep2(id, v) WITH c(x) AS (SELECT 1) SELECT x, 'z' FROM c; END`,
++	`CREATE TRIGGER w_tr_brackets AFTER UPDATE ON [keep] BEGIN UPDATE keep2 SET v = v; END`,
++}
++
++// Test_DB_DumpSubsetSchemaSQLiteAccepts covers a database written in SQL that
++// is perfectly legal and not at all typical. Every object below needs nothing
++// but the two tables asked for, so every one of them belongs in the backup --
++// however it happens to be spelled.
++func Test_DB_DumpSubsetSchemaSQLiteAccepts(t *testing.T) {
++	db, path := mustCreateOnDiskDatabaseWAL()
++	defer os.Remove(path)
++	defer db.Close()
++	mustLoadStatements(t, db, wildSchema...)
++
++	dump := mustDumpSubset(t, db, "keep", "keep2")
++	newDB, newPath := mustRestore(t, dump)
++	defer os.Remove(newPath)
++	defer newDB.Close()
++
++	exp := `view w_brackets,view w_over_brackets,view w_from_with,view w_in_with,` +
++		`view w_scalar_with,view w_in_values,view w_right,view w_isdistinct,` +
++		`view w_underscores,view w_agg_order,view w_cast_quoted,index w_idx_brackets,` +
++		`trigger w_tr_with_ins,trigger w_tr_brackets`
++	if got := strings.Join(mustSchemaObjects(t, newDB), ","); exp != got {
++		t.Fatalf("unexpected objects\nexp: %s\ngot: %s", exp, got)
++	}
++	if rows, err := newDB.QueryStringStmt(`SELECT count(*) FROM w_over_brackets`); err != nil {
++		t.Fatalf("restored view does not answer: %s", err.Error())
++	} else if e := rows[0].GetError(); e != "" {
++		t.Fatalf("restored view does not answer: %s", e)
++	}
++}
++
++// Test_DB_DumpSubsetCarriesWhatWasAlreadyBroken covers the objects a live
++// database collects and never notices: a view whose table was dropped under
++// it, a view naming a column that is not there, a DELETE trigger reading NEW.
++// Each of them fails in the original, and each has to fail in the same way
++// after a restore -- a backup copies a database, it does not repair one.
++func Test_DB_DumpSubsetCarriesWhatWasAlreadyBroken(t *testing.T) {
++	db, path := mustCreateOnDiskDatabaseWAL()
++	defer os.Remove(path)
++	defer db.Close()
++	mustLoadStatements(t, db,
++		`CREATE TABLE keep (id INTEGER PRIMARY KEY, v TEXT)`,
++		`CREATE TABLE other (id INTEGER PRIMARY KEY)`,
++		`CREATE TABLE gone (id INTEGER PRIMARY KEY)`,
++		`INSERT INTO keep VALUES(1, 'a')`,
++		`CREATE VIEW b_dangling AS SELECT id FROM gone`,
++		`CREATE VIEW b_over_dangling AS SELECT id FROM b_dangling`,
++		`CREATE VIEW b_badcol AS SELECT nosuch FROM keep`,
++		`CREATE TRIGGER b_new_in_delete AFTER DELETE ON keep BEGIN UPDATE keep SET v = NEW.v; END`,
++		`CREATE VIEW b_leak AS SELECT id FROM other`,
++		`DROP TABLE gone`,
++	)
++
++	// What the original says when asked. It is not much, and that is the point.
++	origDelete := errorOf(t, db, `DELETE FROM keep WHERE 0`)
++	origView := errorOf(t, db, `SELECT * FROM b_dangling`)
++	if origDelete == "" || origView == "" {
++		t.Fatalf("this database was supposed to be broken already: %q %q", origDelete, origView)
++	}
++
++	dump := mustDumpSubset(t, db, "keep")
++	newDB, newPath := mustRestore(t, dump)
++	defer os.Remove(newPath)
++	defer newDB.Close()
++
++	exp := "view b_dangling,view b_over_dangling,view b_badcol,trigger b_new_in_delete"
++	if got := strings.Join(mustSchemaObjects(t, newDB), ","); exp != got {
++		t.Fatalf("unexpected objects\nexp: %s\ngot: %s", exp, got)
++	}
++	if got := errorOf(t, newDB, `DELETE FROM keep WHERE 0`); got != origDelete {
++		t.Fatalf("restored database answers %q, the original answers %q", got, origDelete)
++	}
++	if got := errorOf(t, newDB, `SELECT * FROM b_dangling`); got != origView {
++		t.Fatalf("restored database answers %q, the original answers %q", got, origView)
++	}
++}
++
++// errorOf returns the error a statement produces, or "" if it produces none.
++func errorOf(t *testing.T, db *DB, stmt string) string {
++	t.Helper()
++	r, err := db.ExecuteStringStmt(stmt)
++	if err != nil {
++		return err.Error()
++	}
++	for _, x := range r {
++		if e := x.GetError(); e != "" {
++			return e
++		}
++	}
++	return ""
++}
++
++// Test_DB_DumpSubsetOddTableNames covers the names the HTTP surface will pass
++// through that no caller means: SQLite's own bookkeeping tables, a view rather
++// than a table, a repeat, and a blank. None of them may error, and each has to
++// produce something that loads.
++func Test_DB_DumpSubsetOddTableNames(t *testing.T) {
++	db, path := mustCreateOnDiskDatabaseWAL()
++	defer os.Remove(path)
++	defer db.Close()
++	mustLoadStatements(t, db, shopSchema...)
++
++	for _, tables := range [][]string{
++		{""},
++		{"users", "users"},
++		{"sqlite_sequence"},
++		{"sqlite_master"},
++		{"user_names"},
++		{"users", "nosuch"},
++	} {
++		t.Run(strings.Join(tables, ","), func(t *testing.T) {
++			dump := mustDumpSubset(t, db, tables...)
++			newDB, newPath := mustRestore(t, dump)
++			defer os.Remove(newPath)
++			defer newDB.Close()
++		})
++	}
++}
+diff --git a/db/state.go b/db/state.go
+index 742e714..d500125 100644
+--- a/db/state.go
++++ b/db/state.go
+@@ -528,3 +528,48 @@ func DumpTablesReq(tables ...string) *command.Request {
+ 		},
+ 	}
+ }
++
++// DumpObjectsReq returns a command.Request that will dump the indexes,
++// triggers and views of a database.
++func DumpObjectsReq() *command.Request {
++	return &command.Request{
++		Statements: []*command.Statement{
++			{
++				Sql: `SELECT "name", "type", "tbl_name", "sql" FROM "sqlite_master" WHERE "sql" NOT NULL AND "type" IN ('index', 'trigger', 'view')`,
++			},
++		},
++	}
++}
++
++// DumpSequencesReq returns a command.Request that will produce the INSERT
++// statements which restore the AUTOINCREMENT counters of the given tables.
++// This form protects against SQL injection by using parameterized queries.
++func DumpSequencesReq(tables ...string) *command.Request {
++	var sb strings.Builder
++	sb.WriteString(`SELECT 'INSERT INTO "sqlite_sequence" VALUES('||quote("name")||','||quote("seq")||')' FROM "sqlite_sequence" WHERE "name" IN (`)
++	for i := range tables {
++		if i > 0 {
++			sb.WriteString(", ")
++		}
++		sb.WriteString("?")
++	}
++	sb.WriteString(") ORDER BY name")
++
++	parameters := make([]*command.Parameter, len(tables))
++	for i, table := range tables {
++		parameters[i] = &command.Parameter{
++			Value: &command.Parameter_S{
++				S: table,
++			},
++		}
++	}
++
++	return &command.Request{
++		Statements: []*command.Statement{
++			{
++				Sql:        sb.String(),
++				Parameters: parameters,
++			},
++		},
++	}
++}
