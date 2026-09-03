@@ -551,7 +551,7 @@ wheels = [
 
 [[package]]
 name = "hud"
-version = "0.6.13"
+version = "0.6.15"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anthropic" },
@@ -567,14 +567,15 @@ dependencies = [
     { name = "prompt-toolkit" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
+    { name = "python-dotenv" },
     { name = "questionary" },
     { name = "rich" },
     { name = "typer" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ff/91/10028f34091d51d7ba9ec7776a84a8a1a08230a2e2828057eecd2bdda49b/hud-0.6.13.tar.gz", hash = "sha256:88243b2b86a9266a40a025c33b2d05d87af12564ce744a755712eef06c65d1db", size = 487554, upload-time = "2026-08-07T23:55:54.145Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f5/e5/6a57957e64509bc5f9b9404b74bcbfa0c3d9b7a955f66ab48d11af183f32/hud-0.6.15.tar.gz", hash = "sha256:24d6482b0e71e220c4d71cced90e020283475cf085442e99cd328e48517870fd", size = 520167, upload-time = "2026-08-21T02:44:34.618Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c4/7e/51a567117f5eb8605a0d830f4e9de74a49dde49ac0ebe0d3fb3ab038fd5b/hud-0.6.13-py3-none-any.whl", hash = "sha256:b1d595b4ec63b897535e6df23f9ee70a4458d979de8d94927235db4136c9444b", size = 586894, upload-time = "2026-08-07T23:55:52.633Z" },
+    { url = "https://files.pythonhosted.org/packages/8d/22/12de711ecc2d953a3421c96bf9b5cc5bc10250a3ed0abe793ab629e88a89/hud-0.6.15-py3-none-any.whl", hash = "sha256:caeb80f837b142f7ae1fddb01673f4b99793ca1dd18298fbed62ab9c735e583b", size = 621925, upload-time = "2026-08-21T02:44:33.238Z" },
 ]
 
 [[package]]
@@ -1511,7 +1512,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "hud", specifier = ">=0.6.13" },
+    { name = "hud", specifier = ">=0.6.15" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.5.0" },
     { name = "pytest", specifier = ">=8.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },

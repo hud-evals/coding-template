@@ -31,6 +31,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # ── Node 22 and 24 under /opt/node/<major>; /usr/local/node points at the
 #    active one and is on PATH. use-node re-points it (one task per container).
+#    PATH first: `npm` is `#!/usr/bin/env node`, so the RUN below needs it.
+ENV PATH="/usr/local/node/bin:${PATH}"
 RUN set -eux; arch="$(dpkg --print-architecture)"; case "$arch" in amd64) n=x64 ;; arm64) n=arm64 ;; esac; \
     for v in ${NODE22} ${NODE24}; do \
       major="${v%%.*}"; mkdir -p "/opt/node/${major}"; \
@@ -42,7 +44,6 @@ RUN set -eux; arch="$(dpkg --print-architecture)"; case "$arch" in amd64) n=x64 
     chmod 755 /usr/local/bin/use-node; \
     for major in 22 24; do use-node "$major" && /usr/local/node/bin/npm install -g pnpm@10 >/dev/null; done; \
     use-node 24
-ENV PATH="/usr/local/node/bin:${PATH}"
 
 # ── Go 1.25 and 1.26 under /opt/go/<minor>; /usr/local/go is the active one.
 RUN set -eux; arch="$(dpkg --print-architecture)"; \
@@ -97,7 +98,7 @@ ENV LD_LIBRARY_PATH=/usr/local/lib GRADER_SQLITE3=/usr/local/bin/sqlite3
 
 # ── hud, in its own venv (never the agent's), and this environment.
 RUN python3 -m venv /opt/hudvenv \
-    && /opt/hudvenv/bin/pip install --no-cache-dir "hud==0.6.13" "httpx>=0.27" \
+    && /opt/hudvenv/bin/pip install --no-cache-dir "hud==0.6.15" "httpx>=0.27" \
     && /opt/hudvenv/bin/python -c "import sqlite3; assert sqlite3.sqlite_version == '${SQLITE_VERSION}', sqlite3.sqlite_version"
 ENV PATH="/opt/hudvenv/bin:${PATH}"
 
