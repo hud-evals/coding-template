@@ -315,10 +315,15 @@ def publish(folder: Path, *, cache_dir: Path, api_key: str | None, api_url: str)
         if not (folder / required).is_file():
             raise UploadError(f"{folder.name}: {required} is missing")
     codebase = meta["codebase"]
+    # {"path": ...}: a snapshot inside the task folder (private repos with no URL to clone).
+    source = (
+        folder / codebase["path"]
+        if "path" in codebase
+        else fetch_codebase(codebase["repo_url"], codebase["sha"], cache_dir / "codebases")
+    )
     artifacts = {
         "codebase": zip_tree(
-            fetch_codebase(codebase["repo_url"], codebase["sha"], cache_dir / "codebases"),
-            cache_dir / folder.name / "codebase.zip",
+            source, cache_dir / folder.name / "codebase.zip", skip=(".git", "__pycache__", ".venv", ".pytest_cache")
         ),
         "grading": zip_tree(folder / "grading", cache_dir / folder.name / "grading.zip"),
         "golden_solution": folder / "gold.diff",

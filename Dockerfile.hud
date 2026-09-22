@@ -1,74 +1,110 @@
 # The one swe-task image. Task-agnostic: no repository, no grader, no prompt is
 # baked in. Everything task-specific arrives as uploads at task setup, so a new
-# task never needs a build or a deploy. What the image does carry is every
-# toolchain the tasks so far needed, side by side:
+# task never needs a build or a deploy.
 #
-#   Node 22 + Node 24 (+ pnpm 10)      use-node <22|24>   (default 24)
-#   Go 1.25 + Go 1.26                  use-go <1.25|1.26> (default 1.26)
-#   Python 3.12, a JRE + DynamoDB Local, SQLite 3.53.4 (library + CLI),
-#   git, ripgrep, util-linux (setpriv), build-essential.
+# The image is a thin base of *installers*, not of pinned runtimes. Every
+# ecosystem's own resolver reads what the uploaded repo declares and fetches
+# exactly that at task setup (root, before the agent gets the repo):
 #
-# A task's grading/setup.sh picks its toolchain (`use-node 22`) and installs the
-# repo's dependencies; without one the env auto-detects from lockfiles.
-# Everything answer-key-shaped lives under /hud (root, mode 700): the vault,
-# the grading pack, gold.diff, llm_rubric.json. Agent shells drop to uid 1000.
+#   Go      /usr/local/go (1.26.x) with GOTOOLCHAIN=auto: go.mod / go.work
+#           asking for a newer Go makes `go` download that toolchain itself.
+#   Node    fnm under /opt/fnm, 22 + 24 pre-warmed; `use-node [version]`
+#           installs/selects from .nvmrc / .node-version / engines.node and
+#           enables corepack, so pnpm/yarn come from package.json's
+#           `packageManager` (pnpm 10 / yarn 1 are the fallbacks).
+#   Python  uv, CPython 3.11 + 3.12 pre-warmed; uv venv / uv sync pick the
+#           interpreter from .python-version / requires-python, downloading it
+#           when it is not there yet. System python3 only runs hud.
+#   Rust    rustup with no toolchain; rust-toolchain.toml or `rustup default
+#           stable` at setup.
+#   Also    a JRE + DynamoDB Local, SQLite 3.53.4 (library + CLI, the rqlite
+#           graders compare against it), git, ripgrep, util-linux (setpriv),
+#           build-essential and the usual -dev libraries.
+#
+# Every toolchain cache lives under the paths in HUD_TOOLCHAIN_CACHES; setup
+# fills them as root and env.py hands them to uid 1000 afterwards, so the
+# agent can `go get`, `npm install`, `uv add` too. Everything answer-key-shaped
+# lives under /hud (root, mode 700). Agent shells drop to uid 1000.
 
 FROM debian:bookworm-slim
 
-ARG NODE22=22.19.0
-ARG NODE24=24.8.0
-ARG GO125=1.25.1
-ARG GO126=1.26.2
+ARG GO=1.26.8
+ARG FNM=1.39.0
+ARG UV=0.12.1
 ARG SQLITE_YEAR=2026
 ARG SQLITE_AMALGAMATION=3530400
 ARG SQLITE_VERSION=3.53.4
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl git xz-utils patch build-essential \
+        ca-certificates curl git xz-utils unzip patch build-essential pkg-config \
+        libssl-dev libsqlite3-dev libpq-dev zlib1g-dev libffi-dev \
         util-linux ripgrep default-jre-headless \
         python3 python3-venv python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# ── Node 22 and 24 under /opt/node/<major>; /usr/local/node points at the
-#    active one and is on PATH. use-node re-points it (one task per container).
-#    PATH first: `npm` is `#!/usr/bin/env node`, so the RUN below needs it.
-ENV PATH="/usr/local/node/bin:${PATH}"
-RUN set -eux; arch="$(dpkg --print-architecture)"; case "$arch" in amd64) n=x64 ;; arm64) n=arm64 ;; esac; \
-    for v in ${NODE22} ${NODE24}; do \
-      major="${v%%.*}"; mkdir -p "/opt/node/${major}"; \
-      curl -fsSL "https://nodejs.org/dist/v${v}/node-v${v}-linux-${n}.tar.xz" \
-        | tar -xJ -C "/opt/node/${major}" --strip-components=1; \
-    done; \
-    ln -s /opt/node/24 /usr/local/node; \
-    printf '#!/bin/sh\nset -e\n[ -d "/opt/node/$1" ] || { echo "no Node $1 (have: $(ls /opt/node))" >&2; exit 1; }\nln -sfn "/opt/node/$1" /usr/local/node\n' > /usr/local/bin/use-node; \
-    chmod 755 /usr/local/bin/use-node; \
-    for major in 22 24; do use-node "$major" && /usr/local/node/bin/npm install -g pnpm@10 >/dev/null; done; \
-    use-node 24
+# ── Where every toolchain keeps its state. One place to look, one list for
+#    env.py to chown to the agent after setup. PATH is static: the Node entry
+#    is fnm's `default` alias, which use-node re-points (one task per container).
+ENV GOPATH=/go GOMODCACHE=/go/pkg/mod GOCACHE=/gocache GOTOOLCHAIN=auto CGO_ENABLED=1 \
+    FNM_DIR=/opt/fnm COREPACK_HOME=/opt/corepack COREPACK_ENABLE_DOWNLOAD_PROMPT=0 COREPACK_DEFAULT_TO_LATEST=0 \
+    npm_config_store_dir=/opt/pnpm-store \
+    UV_PYTHON_INSTALL_DIR=/opt/uv/python UV_CACHE_DIR=/opt/uv/cache UV_PYTHON_BIN_DIR=/opt/uv/bin \
+    RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo \
+    HUD_TOOLCHAIN_CACHES=/go:/gocache:/opt/fnm:/opt/corepack:/opt/pnpm-store:/opt/uv:/opt/rustup:/opt/cargo \
+    PATH=/opt/hudvenv/bin:/usr/local/node/bin:/usr/local/go/bin:/opt/uv/bin:/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# ── Go 1.25 and 1.26 under /opt/go/<minor>; /usr/local/go is the active one.
-RUN set -eux; arch="$(dpkg --print-architecture)"; \
-    for v in ${GO125} ${GO126}; do \
-      minor="${v%.*}"; mkdir -p "/opt/go/${minor}"; \
-      curl -fsSL "https://go.dev/dl/go${v}.linux-${arch}.tar.gz" | tar -xz -C "/opt/go/${minor}" --strip-components=1; \
-    done; \
-    ln -s /opt/go/1.26 /usr/local/go; \
-    printf '#!/bin/sh\nset -e\n[ -d "/opt/go/$1" ] || { echo "no Go $1 (have: $(ls /opt/go))" >&2; exit 1; }\nln -sfn "/opt/go/$1" /usr/local/go\n' > /usr/local/bin/use-go; \
-    chmod 755 /usr/local/bin/use-go
-# Shared module cache (read-only for the agent after setup) and a build cache
-# the env copies into the agent's home warm. GOTOOLCHAIN=local: never download
-# another Go at run time.
-ENV PATH="/usr/local/go/bin:${PATH}" \
-    GOPATH=/go GOMODCACHE=/go/pkg/mod GOCACHE=/gocache GOTOOLCHAIN=local GOFLAGS=-mod=mod CGO_ENABLED=1
-RUN mkdir -p /go /gocache && chmod -R 0777 /go /gocache \
-    && printf '%s\n' \
-      'case ":$PATH:" in *:/usr/local/go/bin:*) ;; *) PATH="/usr/local/go/bin:$PATH" ;; esac' \
-      'case ":$PATH:" in *:/usr/local/node/bin:*) ;; *) PATH="/usr/local/node/bin:$PATH" ;; esac' \
-      'export PATH' \
-      'if [ "$(id -u)" != "0" ]; then' \
-      '    : "${GOPATH:=/go}"; : "${GOMODCACHE:=/go/pkg/mod}"; : "${GOCACHE:=$HOME/.cache/go-build}"' \
-      '    : "${GOFLAGS:=-mod=mod}"; : "${GOTOOLCHAIN:=local}"; : "${CGO_ENABLED:=1}"' \
-      '    export GOPATH GOMODCACHE GOCACHE GOFLAGS GOTOOLCHAIN CGO_ENABLED' \
-      'fi' > /etc/profile.d/10-hud-toolchains.sh \
+# ── Go: one release under /usr/local/go. GOTOOLCHAIN=auto (the Go default)
+#    means a module that requires a newer Go gets it downloaded into
+#    GOMODCACHE on first use, by the module's own go.mod / go.work line.
+#    No GOFLAGS=-mod=mod any more: Go refuses it in go.work (workspace) mode.
+RUN curl -fsSL "https://go.dev/dl/go${GO}.linux-$(dpkg --print-architecture).tar.gz" | tar -xz -C /usr/local \
+    && mkdir -p /go /gocache
+
+# ── Node: fnm owns the versions (/opt/fnm/node-versions/<v>), the `default`
+#    alias is the one on PATH. use-node resolves a version (argument, else
+#    .nvmrc / .node-version / engines.node in $PWD), installs it if needed,
+#    makes it the default and enables corepack for it (Node >= 25 no longer
+#    bundles corepack, hence the npm fallback). fnm alone needs `eval
+#    "$(fnm env)"` per shell; graders and the agent workspace get a fixed
+#    env, so the image needs this one command and one stable path. pnpm 10 and
+#    yarn 1 are corepack's fallbacks for repos without a `packageManager`.
+RUN set -eux; case "$(dpkg --print-architecture)" in amd64) f=fnm-linux ;; arm64) f=fnm-arm64 ;; esac; \
+    curl -fsSL "https://github.com/Schniz/fnm/releases/download/v${FNM}/${f}.zip" -o /tmp/fnm.zip \
+    && unzip -q /tmp/fnm.zip -d /usr/local/bin && chmod 755 /usr/local/bin/fnm && rm /tmp/fnm.zip; \
+    printf '%s\n' \
+      '#!/bin/bash' \
+      '# use-node [version]: make one Node the default on PATH (/usr/local/node -> fnm default alias).' \
+      '# No argument: the version the repo in $PWD declares (.nvmrc, .node-version, engines.node).' \
+      'set -euo pipefail' \
+      'eval "$(fnm env --shell bash)"' \
+      'fnm use --install-if-missing ${1:+"$1"}' \
+      'fnm default "$(fnm current)"' \
+      'command -v corepack >/dev/null || npm install -g corepack >/dev/null' \
+      'corepack enable' \
+      'echo "node $(node --version) ($(readlink $FNM_DIR/aliases/default))"' > /usr/local/bin/use-node; \
+    chmod 755 /usr/local/bin/use-node; \
+    use-node 22 && use-node 24 && ln -s /opt/fnm/aliases/default /usr/local/node; \
+    corepack install -g pnpm@10 yarn@1
+
+# ── Python: uv. `uv venv` / `uv sync` honour .python-version and
+#    requires-python and download a missing CPython on their own; 3.11 and
+#    3.12 are pre-warmed so the common case is offline. python3.X launchers
+#    land in /opt/uv/bin (on PATH); `python3` stays Debian's, for hud.
+RUN curl -fsSL "https://astral.sh/uv/${UV}/install.sh" | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh \
+    && uv python install 3.11 3.12
+
+# ── Rust: rustup only (~15 MB); the toolchain is the repo's business
+#    (rust-toolchain.toml, else `rustup default stable` at setup).
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain none --profile minimal
+
+# ── Login shells (the agent's ssh) do not inherit the image ENV, and the
+#    graders' non-interactive bash gets it from env.py; profile.d + bashrc
+#    give every interactive shell the same view.
+RUN for v in PATH GOPATH GOMODCACHE GOCACHE GOTOOLCHAIN CGO_ENABLED FNM_DIR COREPACK_HOME \
+             COREPACK_ENABLE_DOWNLOAD_PROMPT COREPACK_DEFAULT_TO_LATEST npm_config_store_dir \
+             UV_PYTHON_INSTALL_DIR UV_CACHE_DIR UV_PYTHON_BIN_DIR RUSTUP_HOME CARGO_HOME; do \
+      printf 'export %s="%s"\n' "$v" "$(printenv "$v")"; \
+    done > /etc/profile.d/10-hud-toolchains.sh \
     && chmod 0644 /etc/profile.d/10-hud-toolchains.sh \
     && cat /etc/profile.d/10-hud-toolchains.sh >> /etc/bash.bashrc
 
@@ -79,7 +115,8 @@ RUN mkdir -p /opt/dynamodb-local \
 
 # ── SQLite ${SQLITE_VERSION}: the exact library and CLI the rqlite graders
 #    compare against (Debian's is older). Python's sqlite3 module picks up the
-#    shared library through LD_LIBRARY_PATH.
+#    shared library through LD_LIBRARY_PATH; /usr/local/include shadows the
+#    libsqlite3-dev headers for cgo builds.
 RUN set -eux; cd /tmp; \
     curl -fsSL "https://sqlite.org/${SQLITE_YEAR}/sqlite-autoconf-${SQLITE_AMALGAMATION}.tar.gz" -o sqlite.tar.gz; \
     tar -xzf sqlite.tar.gz; cd "sqlite-autoconf-${SQLITE_AMALGAMATION}"; \
@@ -98,9 +135,8 @@ ENV LD_LIBRARY_PATH=/usr/local/lib GRADER_SQLITE3=/usr/local/bin/sqlite3
 
 # ── hud, in its own venv (never the agent's), and this environment.
 RUN python3 -m venv /opt/hudvenv \
-    && /opt/hudvenv/bin/pip install --no-cache-dir "hud==0.6.15" "httpx>=0.27" \
+    && /opt/hudvenv/bin/pip install --no-cache-dir "hud==0.6.18" "httpx>=0.27" \
     && /opt/hudvenv/bin/python -c "import sqlite3; assert sqlite3.sqlite_version == '${SQLITE_VERSION}', sqlite3.sqlite_version"
-ENV PATH="/opt/hudvenv/bin:${PATH}"
 
 RUN git config --system user.email "dev@localhost" && git config --system user.name "dev" \
     && mkdir -p /workspace/repo /hud/vault /hud/logs /hud/grader \

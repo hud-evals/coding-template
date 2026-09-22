@@ -23,6 +23,9 @@ ENV_NAME = "swe-task-example"  # Environment(name=...) in env.py
 TEMPLATE_ID = "swe-task"  # @env.template(id=...) in env.py
 TASKS_DIR = Path(os.environ.get("SWE_TASKS_DIR") or Path(__file__).resolve().parent / "tasks")
 CACHE_DIR = TASKS_DIR / ".cache"
+# SWE_VALIDATE=golden turns every row into a validation run (env.py grades
+# gold.diff instead of agent work); the slug prefix keeps those traces apart.
+VALIDATE_MODE = os.environ.get("SWE_VALIDATE")
 
 
 def task_for(folder: Path) -> Task:
@@ -31,6 +34,8 @@ def task_for(folder: Path) -> Task:
         folder, cache_dir=CACHE_DIR, api_key=settings.api_key, api_url=settings.hud_api_url.rstrip("/")
     )
     slug = meta.get("slug", folder.name)
+    if VALIDATE_MODE:
+        slug = f"{VALIDATE_MODE}-{slug}"
     shown = " ".join(
         f"{k}={v}"
         for k, v in (
@@ -49,8 +54,12 @@ def task_for(folder: Path) -> Task:
         args={
             "prompt": (folder / "prompt.md").read_text("utf-8"),
             **{arg: [{"file_id": file_id}] for arg, file_id in ids.items()},
+            **({"validate_mode": VALIDATE_MODE} if VALIDATE_MODE else {}),
         },
-        columns={"repo": meta["codebase"]["repo_url"], "description": meta.get("description", "")},
+        columns={
+            "repo": meta["codebase"].get("repo_url") or f"snapshot:{meta['codebase'].get('path', '')}",
+            "description": meta.get("description", ""),
+        },
     )
 
 

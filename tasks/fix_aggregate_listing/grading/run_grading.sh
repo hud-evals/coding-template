@@ -20,7 +20,6 @@ REPO=${REPO_DIR:-/workspace/repo}
 G=${GRADER_DIR:-/hud/grader}
 RUNNER=$G/base
 PKG=$RUNNER/packages/effect-dynamodb
-BASE_SHA=${BASE_SHA:-$(cat "$G/base_sha")}
 STATE=${GRADER_STATE_DIR:-/hud/logs/grading-state}
 LOGDIR=$STATE/logs
 PRISTINE=$STATE/pristine
@@ -177,28 +176,19 @@ test_quality() {
   return $rc
 }
 
-# Repo quality gates: lint, typecheck, and release bookkeeping (a changeset
-# entry or a version bump in the agent's diff).
+# Repo quality gates: lint and typecheck. Release bookkeeping (changeset or
+# version bump) is judged by the llm_rubric row `release_bookkeeping`.
 conventions_gates() {
   ensure_setup
   # Drop grader-owned config files so lint sees only the agent's tree.
   rm -f "$PKG/vitest.gunit.ts" "$PKG/vitest.gconn.ts" "$PKG/vitest.hidden.ts"
   local rc=0
   (cd "$RUNNER" && pnpm lint) >"$LOGDIR/lint.log" 2>&1 \
-    || { rc=1; detail "lint" "$LOGDIR/lint.log"; }
+    || { rc=1; echo "  [grader] gate failed: lint"; detail "lint" "$LOGDIR/lint.log"; }
   (cd "$RUNNER" && pnpm --filter effect-dynamodb check \
                 && pnpm --filter @effect-dynamodb/schema check) \
     >"$LOGDIR/check.log" 2>&1 \
-    || { rc=1; detail "typecheck gate" "$LOGDIR/check.log"; }
-  local has_changeset=no
-  for f in "$REPO"/.changeset/*.md; do
-    [ -e "$f" ] || continue
-    case "$(basename "$f")" in README.md) ;; *) has_changeset=yes ;; esac
-  done
-  if [ "$has_changeset" = no ]; then
-    git -C "$REPO" diff "$BASE_SHA" -- packages/effect-dynamodb/package.json \
-      | grep -q '"version"' || rc=1
-  fi
+    || { rc=1; echo "  [grader] gate failed: typecheck"; detail "typecheck" "$LOGDIR/check.log"; }
   return $rc
 }
 

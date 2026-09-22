@@ -22,6 +22,7 @@ built zips live in the gitignored `tasks/.cache/`. Then `hud eval tasks.py claud
 ```
 tasks/<name>/
   task.json          slug, description, codebase {repo_url, sha}   (packaging only; never a task arg)
+  codebase/          optional: a local source tree, used when task.json sets codebase.path instead of repo_url and sha
   prompt.md          the ticket the agent reads
   gold.diff          the reference solution; validate_mode="golden" grades it instead of agent work
   llm_rubric.json    optional: rows judged by the LLM
@@ -29,9 +30,11 @@ tasks/<name>/
     run_grading.sh   ONE bash function per criterion, named exactly as its id; shared setup on top, dispatcher at the bottom
     criteria.json    the rows: id, requirement, weight, blocker / gate, timeout, pristine_paths
     tests/ ...       hidden tests and helpers the functions run
-    setup.sh         optional: toolchain + dependency install (root, before the agent); else lockfile auto-detection
+    setup.sh         optional: dependency install + warm caches (root, before the agent); else auto-detection (below)
     services.sh      optional: start daemons the tests need (DynamoDB Local ...), return once they answer
 ```
+
+For a private repository already on your machine, copy the source tree into `tasks/<name>/codebase/` and set `"codebase": {"path": "codebase"}`. The publisher zips that folder instead of cloning. `.git` is left out of the zip, and setup makes one baseline commit from the files.
 
 `criteria.json` and `llm_rubric.json` share one row shape: `{"id", "requirement", "weight", ...}`.
 A `criteria.json` row is one deterministic grader: `bash run_grading.sh <id>` in the repo,
@@ -55,8 +58,27 @@ tail, or the judge's reason, evidence, tools used and files read).
 
 The scripts see `REPO_DIR`, `GRADER_DIR` (the pack; `$GRADER_DIR/base` is the repo as the
 agent received it, dependencies installed), `GRADER_STATE_DIR`, `GRADING_LOGS_DIR`,
-`AGENT_DIFF` (the applied patch), `BASE_SHA`, `SETUP_COMMIT`. `use-node 22|24` and
-`use-go 1.25|1.26` pick a toolchain in `setup.sh`.
+`AGENT_DIFF` (the applied patch), `BASE_SHA`, `SETUP_COMMIT`.
+
+## The image vs. the task
+
+The image (`Dockerfile.hud`) is a thin base of installers and system libraries; the exact
+runtimes and dependencies are resolved per task, at setup, from what the uploaded repo declares.
+
+| | in the image | resolved at task setup (from the repo) |
+|---|---|---|
+| Go | Go 1.26.x, `GOTOOLCHAIN=auto` | `go.mod` / `go.work` `go`/`toolchain` line: `go` downloads a newer Go itself; `go mod download` |
+| Node | `fnm` with 22 + 24 pre-warmed, corepack, pnpm 10 / yarn 1 fallbacks | `.nvmrc` / `.node-version` / `engines.node` → `use-node`; `packageManager` → pnpm/yarn version; lockfile → `pnpm install --frozen-lockfile` / `yarn install --frozen-lockfile` / `npm ci` (none: `npm install`) |
+| Python | `uv`, CPython 3.11 + 3.12 pre-warmed (`python3` stays Debian's, for hud) | `.python-version` / `requires-python` → interpreter (downloaded if missing); `uv sync --frozen` / `uv sync` / `uv pip install -r requirements.txt` into `.venv` |
+| Rust | `rustup`, no toolchain | `rust-toolchain(.toml)`, else `rustup default stable`; `cargo fetch` |
+| Also | JRE + DynamoDB Local, SQLite 3.53.4, git, ripgrep, build-essential, libssl/libsqlite3/libpq/zlib/libffi -dev | — |
+
+Without a `setup.sh` the env runs that detection (`setup_commands` in `env.py`); the chosen
+versions are printed into `/hud/logs/setup.log`. A `setup.sh` replaces it entirely: call
+`use-node <version>` to pin a Node the repo does not declare, then install. Every toolchain
+cache (Go modules and builds, fnm, corepack, the pnpm store, uv, rustup) is filled by setup as
+root and handed to the agent's uid afterwards, so the agent can add dependencies and toolchains
+too; graders run as root and share them.
 
 ## Layout
 
@@ -65,7 +87,7 @@ agent received it, dependencies installed), `GRADER_STATE_DIR`, `GRADING_LOGS_DI
 - `coding/judge.py` — the tool-using LLM judge
 - `coding/repo.py` — vault, snapshot, diff, reset, apply
 - `tasks.py` — the Task rows `hud sync` / `hud eval` read; packages and uploads each folder at import
-- `tasks/<name>/` — the four tasks so far: `fix_aggregate_listing`, `exemplar_storage_contention`, `fastify_route_concurrency`, `dump_subset_schema_object_filter`
+- `tasks/<name>/` — the two examples: `fastify_route_concurrency`, `fix_aggregate_listing`
 
 ## Tests
 

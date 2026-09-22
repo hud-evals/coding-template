@@ -98,11 +98,42 @@ def test_upload_argument_accepts_id_object_or_single_item_list():
         env_module._upload([{"file_id": "a"}, {"file_id": "b"}])
 
 
-def test_setup_auto_detection_reads_lockfiles(tmp_path):
+def test_setup_auto_detection_reads_manifests(tmp_path):
     assert env_module.setup_commands(tmp_path) == []
+    (tmp_path / "package.json").write_text("{}")
     (tmp_path / "pnpm-lock.yaml").write_text("")
-    (tmp_path / "go.mod").write_text("module x\n")
-    assert env_module.setup_commands(tmp_path) == ["pnpm install --frozen-lockfile", "go mod download"]
+    (tmp_path / "go.work").write_text("go 1.25.10\n")
+    # Go resolves its own toolchain (GOTOOLCHAIN=auto); a lockfile picks the package manager.
+    assert env_module.setup_commands(tmp_path) == [
+        "go mod download",
+        "go version",
+        "pnpm install --frozen-lockfile",
+        "node --version",
+    ]
+
+
+def test_setup_auto_detection_selects_node_only_when_the_repo_declares_one(tmp_path):
+    (tmp_path / "package.json").write_text("{}")
+    assert env_module.setup_commands(tmp_path) == ["npm install --no-audit --no-fund", "node --version"]
+    (tmp_path / "package.json").write_text(json.dumps({"engines": {"node": ">=22"}}))
+    (tmp_path / "package-lock.json").write_text("{}")
+    assert env_module.setup_commands(tmp_path)[:2] == ["use-node", "npm ci --no-audit --no-fund"]
+    (tmp_path / "package.json").write_text("not json")
+    (tmp_path / ".nvmrc").write_text("22\n")
+    (tmp_path / "yarn.lock").write_text("")
+    assert env_module.setup_commands(tmp_path)[:2] == ["use-node", "yarn install --frozen-lockfile"]
+
+
+def test_setup_auto_detection_uses_uv_and_rustup(tmp_path):
+    (tmp_path / "requirements.txt").write_text("pytest\n")
+    assert env_module.setup_commands(tmp_path)[0] == "uv venv && uv pip install -r requirements.txt"
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    assert env_module.setup_commands(tmp_path)[0].startswith("uv sync || ")
+    (tmp_path / "uv.lock").write_text("")
+    (tmp_path / "Cargo.toml").write_text("[package]\n")
+    commands = env_module.setup_commands(tmp_path)
+    assert commands[0] == "uv sync --frozen"
+    assert commands[2].endswith("rustup default stable") and commands[3] == "cargo fetch"
 
 
 # ─── the grading loop, end to end on a throwaway repo ─────────────────────
@@ -196,6 +227,58 @@ async def test_failed_blocker_and_gate_scale_the_reward(staged_task):
     assert result.info["failed_blockers"] == ["hidden_test"]
     assert result.info["failed_gates"] == ["no_tamper_gate"]
     assert result.reward == pytest.approx(min(uncapped / 3, uncapped * 0.2))
+
+
+@pytest.mark.asyncio
+async def test_prepare_repo_marks_safe_directory_before_git_add(staged_task, monkeypatch):
+    """Hosted git add 128'd: safe.directory was set after init/add, not before."""
+    order: list[str] = []
+    real_git, real_run = repo_lib.git, repo_lib.run
+
+    async def git(repo, *args, **kw):
+        order.append(args[0] if args else "")
+        return await real_git(repo, *args, **kw)
+
+    async def run(*argv, **kw):
+        if argv[:2] == ("git", "config"):
+            order.append("safe.directory")
+            return 0, "", ""
+        return await real_run(*argv, **kw)
+
+    monkeypatch.setattr(repo_lib, "git", git)
+    monkeypatch.setattr(repo_lib, "run", run)
+    monkeypatch.setattr(env_module, "_is_root", lambda: True)
+    await env_module._prepare_repo()
+    assert order.index("safe.directory") < order.index("add")
+
+
+async def _first_two(gen):
+    first = await gen.__anext__()
+    second = await gen.asend(None)
+    return first, second
+
+
+_swe = env_module.env.tasks["swe-task"].func
+
+
+@pytest.mark.asyncio
+async def test_invalid_args_yield_a_prompt_then_a_zero():
+    """A grade frame as the first yield becomes the agent prompt (trace user_message)."""
+    first, result = await _first_two(_swe(prompt="Fix it.", codebase=None, grading=None))
+    assert isinstance(first, str) and "invalid_task_args" in first
+    assert result.reward == 0.0 and result.info["status"] == "invalid_task_args"
+
+
+@pytest.mark.asyncio
+async def test_setup_error_is_not_the_agent_prompt(monkeypatch):
+    async def boom(*_a, **_k):
+        raise env_module.TaskSetupError("setup_failed", exit_code=1)
+
+    monkeypatch.setattr(env_module, "_stage_uploads", boom)
+    first, result = await _first_two(_swe(prompt="Fix it.", codebase=[{"file_id": "c"}], grading=[{"file_id": "g"}]))
+    assert isinstance(first, str) and "setup_failed" in first
+    assert "reward" not in first
+    assert result.info["status"] == "setup_failed"
 
 
 @pytest.mark.asyncio

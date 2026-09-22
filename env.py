@@ -31,6 +31,7 @@ shells drop to a non-root uid, so only the env process can read it.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -111,18 +112,17 @@ env = Environment(name="swe-task-example")
 # (Requires hud>=0.6.12.dev0: earlier shell_uid recursively chowned the whole
 # workspace on the serving path, missing the deploy readiness probe.)
 _AGENT_ENV = {"HOME": str(AGENT_HOME)}
+# The image's toolchain settings (Dockerfile.hud ENV): the same caches setup
+# filled, handed to the agent by _lock_down. The repo's own .venv goes first
+# on PATH so `python` / `pytest` are the project's when setup made one.
+_TOOLCHAIN_VARS = (
+    "GOPATH GOMODCACHE GOCACHE GOTOOLCHAIN CGO_ENABLED "
+    "FNM_DIR COREPACK_HOME COREPACK_ENABLE_DOWNLOAD_PROMPT COREPACK_DEFAULT_TO_LATEST npm_config_store_dir "
+    "UV_PYTHON_INSTALL_DIR UV_CACHE_DIR UV_PYTHON_BIN_DIR RUSTUP_HOME CARGO_HOME"
+).split()
 if not _LOCAL_SUBSTRATE:
-    # The image's toolchains and the Go layout the agent must use: the shared
-    # module cache read-only, its own (pre-warmed) build cache in its home.
-    _AGENT_ENV.update(
-        PATH=os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-        GOPATH=os.environ.get("GOPATH", "/go"),
-        GOMODCACHE=os.environ.get("GOMODCACHE", "/go/pkg/mod"),
-        GOCACHE=str(AGENT_HOME / ".cache" / "go-build"),
-        GOTOOLCHAIN="local",
-        GOFLAGS="-mod=mod",
-        CGO_ENABLED="1",
-    )
+    _AGENT_ENV.update({name: os.environ[name] for name in _TOOLCHAIN_VARS if name in os.environ})
+    _AGENT_ENV["PATH"] = f"{REPO_DIR / '.venv' / 'bin'}:{os.environ.get('PATH', '/usr/local/bin:/usr/bin:/bin')}"
 _ws = Workspace(
     REPO_DIR,
     guest_path=str(REPO_DIR),
@@ -263,6 +263,11 @@ def _zero(status: str, **info: Any) -> EvaluationResult:
     )
 
 
+def _failed_prompt(status: str) -> str:
+    """Agent-facing text when setup dies before a real ticket can be sent."""
+    return f"Task setup failed ({status}). Finish immediately."
+
+
 def _upload(value: Any) -> DataFileRef | None:
     if value is None:
         return None
@@ -346,26 +351,58 @@ async def _stage_uploads(
         raise TaskSetupError("upload_stage_failed", reason=str(exc)[:800]) from exc
 
 
-def setup_commands(repo: Path) -> list[str]:
-    """Lockfile auto-detection, for packs without a setup.sh.
+def _declares_node_version(repo: Path) -> bool:
+    if (repo / ".nvmrc").is_file() or (repo / ".node-version").is_file():
+        return True
+    try:
+        return bool(json.loads((repo / "package.json").read_text("utf-8")).get("engines", {}).get("node"))
+    except (OSError, ValueError, AttributeError):
+        return False
 
-    A lockfile is the author's statement of the toolchain; a manifest alone
-    is not. Ecosystems can coexist (a Go repo with a web UI), so every match
-    contributes.
+
+def setup_commands(repo: Path) -> list[str]:
+    """Auto-setup for packs without a setup.sh: the repo's manifests say what it needs.
+
+    The image holds installers, not versions (Dockerfile.hud), so each
+    ecosystem's own resolver picks the runtime from what the repo declares:
+    ``go`` switches toolchains itself from go.mod / go.work (GOTOOLCHAIN=auto),
+    ``use-node`` reads .nvmrc / .node-version / engines.node through fnm (with
+    no declaration the image default stays) and corepack takes pnpm / yarn
+    from package.json's ``packageManager``, ``uv`` reads .python-version /
+    requires-python and downloads a missing CPython. A lockfile picks the
+    package manager; a bare package.json gets ``npm install``. Ecosystems
+    coexist (a Go repo with a web UI), so every match contributes, and each
+    block ends by printing the version it chose, for setup.log.
     """
     commands: list[str] = []
-    if (repo / "pnpm-lock.yaml").is_file():
-        commands.append("pnpm install --frozen-lockfile")
-    elif (repo / "package-lock.json").is_file():
-        commands.append("npm ci --no-audit --no-fund")
-    elif (repo / "yarn.lock").is_file():
-        commands.append("yarn install --frozen-lockfile")
-    if (repo / "go.mod").is_file():
-        commands.append("go mod download")
-    if (repo / "pyproject.toml").is_file():
-        commands.append("python3 -m venv .venv && .venv/bin/pip install -e .")
+    if (repo / "go.work").is_file() or (repo / "go.mod").is_file():
+        commands += ["go mod download", "go version"]
+    if (repo / "package.json").is_file():
+        if _declares_node_version(repo):
+            commands.append("use-node")
+        if (repo / "pnpm-lock.yaml").is_file():
+            commands.append("pnpm install --frozen-lockfile")
+        elif (repo / "yarn.lock").is_file():
+            commands.append("yarn install --frozen-lockfile")
+        elif (repo / "package-lock.json").is_file():
+            commands.append("npm ci --no-audit --no-fund")
+        else:
+            commands.append("npm install --no-audit --no-fund")
+        commands.append("node --version")
+    if (repo / "uv.lock").is_file():
+        commands += ["uv sync --frozen", ".venv/bin/python --version"]
+    elif (repo / "pyproject.toml").is_file():
+        # uv sync needs a [project] table; older layouts still build with pip.
+        commands += ["uv sync || (uv venv && uv pip install -e .)", ".venv/bin/python --version"]
     elif (repo / "requirements.txt").is_file():
-        commands.append("python3 -m venv .venv && .venv/bin/pip install -r requirements.txt")
+        commands += ["uv venv && uv pip install -r requirements.txt", ".venv/bin/python --version"]
+    if (repo / "Cargo.toml").is_file():
+        # The proxies install a rust-toolchain(.toml) pin on first use; without one, stable.
+        commands += [
+            "[ -e rust-toolchain ] || [ -e rust-toolchain.toml ] || rustup default stable",
+            "cargo fetch",
+            "rustc --version",
+        ]
     return commands
 
 
@@ -375,17 +412,21 @@ async def _prepare_repo() -> dict[str, Any]:
     A zip with its ``.git`` inside keeps its history (vaulted at setup like
     any other flavor); plain source gets one root commit. Setup runs as root
     before the chown: ``setup.sh`` from the pack (the RUN lines the task's
-    Dockerfile used to have) or the lockfile auto-detection; a non-zero exit
+    Dockerfile used to have) or the manifest auto-detection; a non-zero exit
     fails the task closed. ``$GRADER_DIR/base`` is then the repo exactly as
     the agent receives it (dependencies installed, no ``.git``) - the
     pre-change tree for run_grading.sh and for the judge.
     """
+    # Hosted: Workspace.start() has already chowned REPO_DIR to the agent uid,
+    # so root's git sees dubious ownership. safe.directory must be set before
+    # any git that touches the worktree (init/add), not after. Global config
+    # only: git ignores -c for this check.
+    if _is_root():
+        await repo_lib.run("git", "config", "--global", "--add", "safe.directory", str(REPO_DIR), cwd=Path("/"))
     if not (REPO_DIR / ".git").exists():
         await repo_lib.git(REPO_DIR, "init", "-q", "-b", "main", ".")
         await repo_lib.git(REPO_DIR, "add", "-A")
         await repo_lib.git(REPO_DIR, "commit", "-q", "--allow-empty", "-m", "baseline")
-    if _is_root():
-        await repo_lib.run("git", "config", "--global", "--add", "safe.directory", str(REPO_DIR), cwd=Path("/"))
     _, sha, _ = await repo_lib.git(REPO_DIR, "rev-parse", "HEAD")
     base_sha = sha.strip()
 
@@ -408,11 +449,12 @@ async def _prepare_repo() -> dict[str, Any]:
 
 
 async def _lock_down() -> None:
-    """Root owns /hud at mode 700; the agent gets read access to the Go caches setup filled.
+    """Root owns /hud at mode 700; the agent owns the toolchain caches setup filled.
 
-    The module cache is shared read-only (the grader compiles against it too;
-    ``cache/lock`` is the one file Go opens read-write). A warm build cache is
-    copied into the agent's home so its first build is not cold.
+    HUD_TOOLCHAIN_CACHES (Dockerfile.hud) lists them: Go module and build
+    caches, fnm's Node versions, corepack, the pnpm store, uv's interpreters
+    and cache, rustup. Warm from setup, and writable so the agent can add a
+    dependency or a toolchain; the grader runs as root and reads them fine.
     """
     if not _is_root():
         return
@@ -420,18 +462,9 @@ async def _lock_down() -> None:
     for path in (HUD_ROOT, GRADER_DIR, LOGS_DIR, VAULT_DIR):
         if path.exists():
             path.chmod(0o700)
-    gopath = Path(os.environ.get("GOPATH", "/go"))
-    if gopath.is_dir():
-        await repo_lib.run("chmod", "-R", "a+rX", str(gopath), cwd=Path("/"), timeout=600.0)
-        lock = Path(os.environ.get("GOMODCACHE", str(gopath / "pkg" / "mod"))) / "cache" / "lock"
-        if lock.exists():
-            lock.chmod(0o666)
-    gocache = os.environ.get("GOCACHE")
-    if gocache and Path(gocache).is_dir() and any(Path(gocache).iterdir()):
-        agent_cache = AGENT_HOME / ".cache" / "go-build"
-        shutil.rmtree(agent_cache, ignore_errors=True)
-        agent_cache.parent.mkdir(parents=True, exist_ok=True)
-        await repo_lib.run("cp", "-a", gocache, str(agent_cache), cwd=Path("/"), timeout=1200.0)
+    caches = [p for p in os.environ.get("HUD_TOOLCHAIN_CACHES", "").split(":") if p and Path(p).is_dir()]
+    if caches:
+        await repo_lib.run("chown", "-R", f"{AGENT_UID}:{AGENT_UID}", *caches, cwd=Path("/"), timeout=1200.0)
 
 
 async def _start_services() -> None:
@@ -619,7 +652,7 @@ async def swe_task(
     """One coding task; everything graded arrives in the uploads.
 
     Stage the files, prepare the repo (``setup.sh`` from the grading pack,
-    else lockfile auto-detection), start ``services.sh`` if present, hand
+    else auto-detection from the repo's manifests), start ``services.sh`` if present, hand
     the agent the prompt; then ``run_grading.sh <id>`` for every row of
     ``criteria.json`` and one judge run per row of ``llm_rubric.json``,
     combined into one result. ``validate_mode="golden"`` grades the uploaded
@@ -636,6 +669,9 @@ async def swe_task(
         if validate_mode == "golden" and gold_ref is None:
             raise ValueError('validate_mode="golden" needs a golden_solution upload')
     except Exception as exc:  # noqa: BLE001 - fail closed: a misconfigured task scores 0
+        # First yield is the agent prompt; a grade frame here is rendered as
+        # the field names ("reward / done / content / …"). Prompt, then grade.
+        _ = yield _failed_prompt("invalid_task_args")
         yield _zero("invalid_task_args", reason=str(exc)[:800])
         return
 
@@ -658,17 +694,21 @@ async def swe_task(
         await _start_services()
     except TaskSetupError as exc:
         _stop_services()
+        _ = yield _failed_prompt(exc.status)
         yield _zero(exc.status, **exc.info)
         return
     except Exception as exc:  # noqa: BLE001 - anything else is still a task that cannot run
         _stop_services()
+        _ = yield _failed_prompt("setup_error")
         yield _zero("setup_error", reason=repr(exc)[:800])
         return
 
     if validate_mode is not None:
         _ = yield "Validation run: no work is expected of you. Finish immediately."
     else:
-        _ = yield f"{WORKSPACE_NOTE}\n\n{prompt}"
+        # Bullet + "Prompt:" so the harness line does not collapse into the
+        # ticket wherever the viewer renders the yield as markdown.
+        _ = yield f"- {WORKSPACE_NOTE}\n\nPrompt:\n{prompt}"
 
     try:
         result = await _grade_swe(validate_mode, criteria, rubric, prompt)

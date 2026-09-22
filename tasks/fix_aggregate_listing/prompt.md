@@ -10,4 +10,4 @@ We drive our admin console's browse screens with `db.aggregates.X.list(filter, {
 
 One ops note: these tables run on modest provisioned throughput and we've had throttling incidents before when a deploy fanned requests out too aggressively. Also, cursors already held by deployed clients must keep working.
 
-All repo quality gates apply.
+All repo quality gates apply, and since this is a user-facing fix please include the repo's usual release bookkeeping (a changeset entry or version bump).

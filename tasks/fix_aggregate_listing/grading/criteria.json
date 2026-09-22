@@ -1,9 +1,9 @@
 [
-  {"id": "ordering_equivalence",  "requirement": "Sharded and unsharded listing return the same ordered feed (adversarial Unicode fixtures, compared against a control implementation)", "weight": 0.25, "blocker": true,  "timeout": 900},
-  {"id": "pagination_invariants", "requirement": "Cursors page without gaps or duplicates, honour limit, terminate, and legacy cursors from deployed clients keep working", "weight": 0.20, "blocker": true,  "timeout": 900},
+  {"id": "ordering_equivalence",  "requirement": "Sharded and unsharded listing return the same ordered feed (adversarial Unicode fixtures, compared against a control implementation)", "weight": 0.225, "blocker": true,  "timeout": 900},
+  {"id": "pagination_invariants", "requirement": "Cursors page without gaps or duplicates, honour limit, terminate, and legacy cursors from deployed clients keep working", "weight": 0.175, "blocker": true,  "timeout": 900},
   {"id": "throughput_discipline", "requirement": "Fan-out of DynamoDB queries stays bounded (in-flight queries counted behaviourally)", "weight": 0.10, "blocker": true,  "timeout": 900},
   {"id": "n_plus_one",            "requirement": "Page assembly does not issue one query per item", "weight": 0.10, "blocker": false, "timeout": 600},
   {"id": "regression_backcompat", "requirement": "Pre-existing behaviour unchanged: hidden regression suite, the pinned cursor tests untouched, the repo's own suites green with pristine configs", "weight": 0.15, "blocker": true,  "timeout": 1800},
   {"id": "test_quality",          "requirement": "The agent's own suite is green as submitted (twice) and goes red when the pristine base sources are restored", "weight": 0.15, "blocker": true,  "timeout": 1800},
-  {"id": "conventions_gates",     "requirement": "Lint and typecheck pass; release bookkeeping present (changeset entry or version bump)", "weight": 0.05, "blocker": false, "timeout": 900}
+  {"id": "conventions_gates",     "requirement": "Lint and typecheck pass", "weight": 0.05, "blocker": false, "timeout": 900}
 ]

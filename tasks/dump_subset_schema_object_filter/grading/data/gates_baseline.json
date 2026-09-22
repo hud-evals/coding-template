@@ -1,8 +1,0 @@
-{
- "build": [],
- "gofmt": [],
- "tests": [
-  "github.com/rqlite/rqlite/v10/db::Test_Geopoly"
- ],
- "vet": []
-}
