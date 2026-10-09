@@ -55,8 +55,9 @@ class UidWallWorkspace(Workspace):
     the root:700 ``.git`` / patches. No-op off root (local). See notes §15.H.
     """
 
-    def shell_argv(self, command=None, *, cwd=None, env=None):
-        argv = super().shell_argv(command, cwd=cwd, env=env)
+    # Forward options unchanged: hud adds shell_argv keywords over time (tty in 0.6.13).
+    def shell_argv(self, command=None, **options):
+        argv = super().shell_argv(command, **options)
         if sys.platform != "win32" and hasattr(os, "geteuid") and os.geteuid() == 0:
             argv = ["setpriv", "--reuid", "1000", "--regid", "1000", "--clear-groups", "--", *argv]
         return argv
