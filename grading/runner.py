@@ -3,7 +3,7 @@ Grading runner for agent patch testing.
 
 Workflow:
 1. grade() calls:
-   - Copy repo, apply test.patch
+   - Copy repo, strip agent-injected pytest hooks, apply test.patch
    - run_tests() [customize this]
    - Returns score (0.0 or 1.0)
 """
@@ -13,14 +13,26 @@ import os
 import shutil
 import subprocess
 import uuid
+import xml.etree.ElementTree as ET
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Agent-writable paths that can change pytest's exit code without fixing the bug.
+_PYTEST_INJECTION_GLOBS = (
+    "**/conftest.py",
+    "**/pytest.ini",
+    "**/.pytest.ini",
+    "**/tox.ini",
+    "**/pytest.py",
+    "**/sitecustomize.py",
+)
 
 
 class GradingRunner:
     """
     Grading runner.
-    
+
     Usage:
         runner = GradingRunner(
             problem_id="my_task",
@@ -28,9 +40,9 @@ class GradingRunner:
             test_files=["test_foo.py"],
         )
         score = runner.grade()
-    
+
     To customize, override run_tests():
-        
+
         class MyRunner(GradingRunner):
             def run_tests(self) -> tuple[bool, dict]:
                 result = subprocess.run(["make", "test"], cwd=self.working_dir)
@@ -63,10 +75,58 @@ class GradingRunner:
     def test_patch(self) -> str:
         return os.path.join(self.patches_dir, self.problem_id, "test.patch")
 
+    def _strip_pytest_injections(self) -> list[str]:
+        """Drop agent-added pytest hooks; restore any that were already on HEAD.
+
+        An agent can write ``conftest.py`` that skips every test or forces
+        ``session.exitstatus = 0``. Both make ``pytest`` exit 0 while the bug
+        remains. Remove untracked injections and put tracked ones back to HEAD.
+        """
+        root = Path(self.working_dir)
+        removed: list[str] = []
+        tracked: list[str] = []
+        for pattern in _PYTEST_INJECTION_GLOBS:
+            for path in root.glob(pattern):
+                if not path.is_file():
+                    continue
+                rel = str(path.relative_to(root))
+                # Is this path tracked on HEAD?
+                check = subprocess.run(
+                    ["git", "ls-files", "--error-unmatch", rel],
+                    cwd=self.working_dir,
+                    capture_output=True,
+                    text=True,
+                )
+                if check.returncode == 0:
+                    tracked.append(rel)
+                else:
+                    path.unlink()
+                    removed.append(rel)
+
+        if tracked:
+            restore = subprocess.run(
+                ["git", "checkout", "HEAD", "--", *tracked],
+                cwd=self.working_dir,
+                capture_output=True,
+                text=True,
+            )
+            if restore.returncode != 0:
+                logger.warning(
+                    "Could not restore tracked pytest files %s: %s",
+                    tracked,
+                    restore.stderr.strip(),
+                )
+            else:
+                removed.extend(f"restored:{r}" for r in tracked)
+
+        if removed:
+            logger.info("Stripped pytest injection points: %s", removed)
+        return removed
+
     def grade(self) -> float:
         """
         Run grading and return score.
-        
+
         Returns:
             1.0 if tests pass, 0.0 otherwise
         """
@@ -90,6 +150,8 @@ class GradingRunner:
                 )
             else:
                 logger.info("Git index refreshed")
+
+            self._strip_pytest_injections()
 
             # Apply test patch (adds test files)
             logger.info(f"Applying test patch: {self.test_patch}")
@@ -124,6 +186,7 @@ class GradingRunner:
 
             # Run tests
             success, metadata = self.run_tests()
+            logger.info("Test metadata: %s", {k: metadata[k] for k in metadata if k not in ("stdout", "stderr")})
 
             return 1.0 if success else 0.0
         finally:
@@ -139,22 +202,79 @@ class GradingRunner:
     def run_tests(self) -> tuple[bool, dict]:
         """
         Run tests and return results. Override this for custom logic.
-        
-        Returns:
-            (success, metadata) - success is True if tests pass
+
+        Success requires a real pass: JUnit must show at least one test, zero
+        failures, zero errors, and zero skips. Exit code alone is not enough:
+        an agent can force exit 0 from conftest while every assertion still fails.
         """
-        cmd = self.test_command.format(test_files=" ".join(self.test_files))
+        junit_path = Path(self.working_dir) / f".hud-junit-{uuid.uuid4().hex}.xml"
+        files = " ".join(self.test_files)
+        # Prefer the configured command, but always append a junit flag the
+        # default pytest understands. Custom commands that already write junit
+        # can override run_tests entirely.
+        base = self.test_command.format(test_files=files)
+        if "pytest" in base and "--junitxml" not in base:
+            cmd = f"{base} --junitxml={junit_path}"
+        else:
+            cmd = base
+
         logger.info(f"Running: {cmd}")
-        
+
+        env = os.environ.copy()
+        # Block third-party pytest plugins the agent might have dropped on PYTHONPATH.
+        env.setdefault("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
+
         result = subprocess.run(
             ["bash", "-lc", cmd],
             cwd=self.working_dir,
             capture_output=True,
             text=True,
+            env=env,
         )
 
-        return result.returncode == 0, {
+        meta: dict = {
             "exit_code": result.returncode,
             "stdout": result.stdout,
             "stderr": result.stderr,
         }
+
+        if not junit_path.is_file():
+            meta["error"] = "test command did not write JUnit XML"
+            return False, meta
+
+        try:
+            summary = _junit_summary(junit_path)
+        except (OSError, ET.ParseError, ValueError) as exc:
+            meta["error"] = f"bad JUnit XML: {exc}"
+            return False, meta
+        finally:
+            junit_path.unlink(missing_ok=True)
+
+        meta.update(summary)
+        ok = (
+            summary["tests"] > 0
+            and summary["failures"] == 0
+            and summary["errors"] == 0
+            and summary["skipped"] == 0
+        )
+        return ok, meta
+
+
+def _junit_summary(path: Path) -> dict[str, int]:
+    root = ET.parse(path).getroot()
+    # pytest may write <testsuites> or a single <testsuite>
+    suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+    if not suites:
+        raise ValueError("no testsuite elements")
+    tests = failures = errors = skipped = 0
+    for s in suites:
+        tests += int(s.attrib.get("tests", 0))
+        failures += int(s.attrib.get("failures", 0))
+        errors += int(s.attrib.get("errors", 0))
+        skipped += int(s.attrib.get("skipped", 0))
+    return {
+        "tests": tests,
+        "failures": failures,
+        "errors": errors,
+        "skipped": skipped,
+    }
