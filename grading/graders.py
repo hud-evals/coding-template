@@ -36,7 +36,7 @@ class AgentPatchGrader(Grader):
     """
 
     name = "AgentPatchGrader"
-    DEFAULT_TEST_COMMAND = "uv run pytest {test_files}"
+    DEFAULT_TEST_COMMAND = "python -m pytest {test_files}"
 
     @classmethod
     async def compute_score(

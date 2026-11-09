@@ -11,7 +11,6 @@ an isolated copy and runs pytest at grade time.
 import asyncio
 import logging
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,6 +20,7 @@ from hud.environment import Environment, Workspace
 from hud.graders import combine
 
 from grading import AgentPatchGrader, ValidateMode
+from grading.runner import _remove_tree
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,10 @@ async def _ensure_repo() -> None:
     Path(PROJECT_DIR).parent.mkdir(parents=True, exist_ok=True)
     logger.info("Cloning %s into %s", REPO_URL, PROJECT_DIR)
     proc = await asyncio.create_subprocess_exec(
-        "git", "clone", REPO_URL, PROJECT_DIR,
+        "git",
+        "clone",
+        REPO_URL,
+        PROJECT_DIR,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -98,8 +101,8 @@ async def _up() -> None:
 async def _down() -> None:
     await _ws.stop()
     if _LOCAL_SUBSTRATE:
-        shutil.rmtree(PROJECT_DIR, ignore_errors=True)
-        shutil.rmtree(PATCHES_DIR, ignore_errors=True)
+        _remove_tree(PROJECT_DIR)
+        _remove_tree(PATCHES_DIR)
 
 
 def setup_task(task_id: str, validate_mode: ValidateMode | None = None) -> None:
@@ -114,7 +117,9 @@ def setup_task(task_id: str, validate_mode: ValidateMode | None = None) -> None:
 
     diff = subprocess.run(
         ["git", "diff", f"origin/{base}", f"origin/{test}"],
-        cwd=PROJECT_DIR, capture_output=True, text=True,
+        cwd=PROJECT_DIR,
+        capture_output=True,
+        text=True,
     )
     with open(os.path.join(task_patches_dir, "test.patch"), "w") as f:
         f.write(diff.stdout)
@@ -122,7 +127,9 @@ def setup_task(task_id: str, validate_mode: ValidateMode | None = None) -> None:
     checkout_branch = golden if validate_mode == "golden_pass" else base
     result = subprocess.run(
         ["git", "checkout", "-f", f"origin/{checkout_branch}"],
-        cwd=PROJECT_DIR, capture_output=True, text=True,
+        cwd=PROJECT_DIR,
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0:
         logger.error("Failed to checkout %s: %s", checkout_branch, result.stderr)
@@ -130,8 +137,6 @@ def setup_task(task_id: str, validate_mode: ValidateMode | None = None) -> None:
         # Re-assert the uid wall after checkout (image only): repo -> agent, .git -> root.
         subprocess.run(["chown", "-R", "ubuntu:ubuntu", PROJECT_DIR], capture_output=True)
         subprocess.run(["chown", "-R", "root:root", os.path.join(PROJECT_DIR, ".git")], capture_output=True)
-
-    os.chdir(PROJECT_DIR)
 
 
 def make_prompt(description: str) -> str:

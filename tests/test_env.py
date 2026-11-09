@@ -5,7 +5,10 @@ template is registered and the task rows are well-formed, so authoring mistakes
 surface fast without a build.
 """
 
+import stat
+
 from env import env
+from grading.runner import _remove_tree
 from tasks import tasks
 
 
@@ -18,6 +21,19 @@ def test_template_registered():
 
 def test_env_identity():
     assert env.name == "coding"
+
+
+def test_local_cleanup_removes_readonly_git_files(tmp_path):
+    """Git for Windows marks packed objects read-only; local teardown must still be complete."""
+    repo = tmp_path / "project"
+    packed = repo / ".git" / "objects" / "pack" / "objects.pack"
+    packed.parent.mkdir(parents=True)
+    packed.write_bytes(b"pack")
+    packed.chmod(stat.S_IREAD)
+
+    _remove_tree(str(repo))
+
+    assert not repo.exists()
 
 
 def test_tasks_collected():

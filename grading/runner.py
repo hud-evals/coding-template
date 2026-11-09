@@ -11,16 +11,32 @@ Workflow:
 import logging
 import os
 import shutil
+import stat
 import subprocess
+import tempfile
 import uuid
 
 logger = logging.getLogger(__name__)
 
 
+def _remove_tree(path: str) -> None:
+    """Remove a tree, including read-only Git pack files on Windows."""
+
+    def remove_readonly(function, name, exc_info):
+        error = exc_info[1]
+        if not isinstance(error, PermissionError):
+            raise error
+        os.chmod(name, stat.S_IWRITE)
+        function(name)
+
+    if os.path.exists(path):
+        shutil.rmtree(path, onerror=remove_readonly)
+
+
 class GradingRunner:
     """
     Grading runner.
-    
+
     Usage:
         runner = GradingRunner(
             problem_id="my_task",
@@ -28,9 +44,9 @@ class GradingRunner:
             test_files=["test_foo.py"],
         )
         score = runner.grade()
-    
+
     To customize, override run_tests():
-        
+
         class MyRunner(GradingRunner):
             def run_tests(self) -> tuple[bool, dict]:
                 result = subprocess.run(["make", "test"], cwd=self.working_dir)
@@ -53,11 +69,9 @@ class GradingRunner:
         # and locally (a writable dir next to env.py).
         self.patches_dir = patches_dir or os.environ.get("PATCHES_DIR", "/home/root/patches")
         self.repo_path = (
-            repo_path
-            or os.environ.get("PROJECT_DIR")
-            or f"/home/ubuntu/{os.environ.get('FOLDER_NAME', 'project')}"
+            repo_path or os.environ.get("PROJECT_DIR") or f"/home/ubuntu/{os.environ.get('FOLDER_NAME', 'project')}"
         )
-        self.working_dir = f"/tmp/grading_{uuid.uuid4()}"
+        self.working_dir = os.path.join(tempfile.gettempdir(), f"grading_{uuid.uuid4()}")
 
     @property
     def test_patch(self) -> str:
@@ -66,7 +80,7 @@ class GradingRunner:
     def grade(self) -> float:
         """
         Run grading and return score.
-        
+
         Returns:
             1.0 if tests pass, 0.0 otherwise
         """
@@ -85,8 +99,7 @@ class GradingRunner:
             )
             if refresh.returncode != 0:
                 logger.warning(
-                    f"git update-index --refresh failed (exit {refresh.returncode}): "
-                    f"{refresh.stderr.strip()}"
+                    f"git update-index --refresh failed (exit {refresh.returncode}): {refresh.stderr.strip()}"
                 )
             else:
                 logger.info("Git index refreshed")
@@ -104,7 +117,7 @@ class GradingRunner:
             patch_lines = patch_content.splitlines()
             logger.info(
                 f"Patch stats: {len(patch_lines)} lines, "
-                f"files: {[l for l in patch_lines if l.startswith('diff --git')]}"
+                f"files: {[line for line in patch_lines if line.startswith('diff --git')]}"
             )
 
             result = subprocess.run(
@@ -117,10 +130,7 @@ class GradingRunner:
             if result.returncode != 0:
                 logger.error(f"git apply stdout: {result.stdout.strip()}")
                 logger.error(f"git apply stderr: {result.stderr.strip()}")
-                raise RuntimeError(
-                    f"git apply failed (exit {result.returncode}): "
-                    f"{result.stderr.strip()}"
-                )
+                raise RuntimeError(f"git apply failed (exit {result.returncode}): {result.stderr.strip()}")
 
             # Run tests
             success, metadata = self.run_tests()
@@ -130,7 +140,7 @@ class GradingRunner:
             # Never leave the patched copy (which contains the hidden tests) on
             # disk — on an unisolated host (local macOS) a later rollout's agent
             # could read it via `find /`.
-            shutil.rmtree(self.working_dir, ignore_errors=True)
+            _remove_tree(self.working_dir)
 
     # =========================================================================
     # CUSTOMIZE THIS
@@ -139,19 +149,28 @@ class GradingRunner:
     def run_tests(self) -> tuple[bool, dict]:
         """
         Run tests and return results. Override this for custom logic.
-        
+
         Returns:
             (success, metadata) - success is True if tests pass
         """
         cmd = self.test_command.format(test_files=" ".join(self.test_files))
         logger.info(f"Running: {cmd}")
-        
+
+        shell_command = (
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", cmd]
+            if os.name == "nt"
+            else ["bash", "-lc", cmd]
+        )
         result = subprocess.run(
-            ["bash", "-lc", cmd],
+            shell_command,
             cwd=self.working_dir,
             capture_output=True,
             text=True,
         )
+        if result.returncode != 0:
+            logger.error("Test command failed (exit %s)", result.returncode)
+            logger.error("Test stdout: %s", result.stdout.strip())
+            logger.error("Test stderr: %s", result.stderr.strip())
 
         return result.returncode == 0, {
             "exit_code": result.returncode,
